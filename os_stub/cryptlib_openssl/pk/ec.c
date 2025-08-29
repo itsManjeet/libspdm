@@ -716,6 +716,14 @@ done:
     return ret_val;
 }
 
+static void print_hex(const char* label, uint8_t* buffer, size_t size) {
+    printf("%s: ", label);
+    for (int i = 0; i < size; i++) {
+        printf("%02x ", buffer[i]);
+    }
+    printf("\n");
+}
+
 /**
  * Carries out the EC-DSA signature.
  *
@@ -880,7 +888,7 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
         goto cleanup_der;
     }
 
-    result = der_to_raw_rs(der_sign, der_sign_len, signature, *sig_size);
+    result = der_to_raw_rs(der_sign, der_sign_len, signature, half_size);
 
 cleanup_der:
     OPENSSL_free(der_sign);
@@ -890,116 +898,6 @@ cleanup_ctx:
 
     return result;
 }
-
-// bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
-//                         const uint8_t *message_hash, size_t hash_size,
-//                         uint8_t *signature, size_t *sig_size)
-// {
-//     EC_KEY *ec_key;
-//     ECDSA_SIG *ecdsa_sig;
-//     int32_t openssl_nid;
-//     uint8_t half_size;
-//     BIGNUM *bn_r;
-//     BIGNUM *bn_s;
-//     int r_size;
-//     int s_size;
-
-//     if (ec_context == NULL || message_hash == NULL) {
-//         return false;
-//     }
-
-//     if (signature == NULL) {
-//         return false;
-//     }
-
-//     EVP_PKEY *evp_pkey = (EVP_PKEY *)ec_context;
-//     ec_key = EVP_PKEY_get1_EC_KEY(evp_pkey);
-//     openssl_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
-//     switch (openssl_nid) {
-//     case NID_X9_62_prime256v1:
-//         half_size = 32;
-//         break;
-//     case NID_secp384r1:
-//         half_size = 48;
-//         break;
-//     case NID_secp521r1:
-//         half_size = 66;
-//         break;
-//     default:
-//         return false;
-//     }
-//     if (*sig_size < (size_t)(half_size * 2)) {
-//         *sig_size = half_size * 2;
-//         return false;
-//     }
-//     *sig_size = half_size * 2;
-//     libspdm_zero_mem(signature, *sig_size);
-
-//     switch (hash_nid) {
-//     case LIBSPDM_CRYPTO_NID_SHA256:
-//         if (hash_size != LIBSPDM_SHA256_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     case LIBSPDM_CRYPTO_NID_SHA384:
-//         if (hash_size != LIBSPDM_SHA384_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     case LIBSPDM_CRYPTO_NID_SHA512:
-//         if (hash_size != LIBSPDM_SHA512_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     case LIBSPDM_CRYPTO_NID_SHA3_256:
-//         if (hash_size != LIBSPDM_SHA3_256_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     case LIBSPDM_CRYPTO_NID_SHA3_384:
-//         if (hash_size != LIBSPDM_SHA3_384_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     case LIBSPDM_CRYPTO_NID_SHA3_512:
-//         if (hash_size != LIBSPDM_SHA3_512_DIGEST_SIZE) {
-//             return false;
-//         }
-//         break;
-
-//     default:
-//         return false;
-//     }
-
-//     ecdsa_sig = ECDSA_do_sign(message_hash, (uint32_t)hash_size,
-//         ec_key);
-//     if (ecdsa_sig == NULL) {
-//         return false;
-//     }
-
-//     ECDSA_SIG_get0(ecdsa_sig, (const BIGNUM **)&bn_r,
-//                    (const BIGNUM **)&bn_s);
-
-//     r_size = BN_num_bytes(bn_r);
-//     s_size = BN_num_bytes(bn_s);
-//     if (r_size <= 0 || s_size <= 0) {
-//         ECDSA_SIG_free(ecdsa_sig);
-//         return false;
-//     }
-//     LIBSPDM_ASSERT((size_t)r_size <= half_size && (size_t)s_size <= half_size);
-
-//     BN_bn2bin(bn_r, &signature[0 + half_size - r_size]);
-//     BN_bn2bin(bn_s, &signature[half_size + half_size - s_size]);
-
-//     ECDSA_SIG_free(ecdsa_sig);
-
-//     return true;
-// }
 
 /**
  * Verifies the EC-DSA signature.
