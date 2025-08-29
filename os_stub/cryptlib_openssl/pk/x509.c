@@ -1620,10 +1620,7 @@ bool libspdm_ec_get_public_key_from_x509(const uint8_t *cert, size_t cert_size,
         goto done;
     }
 
-
-    /* Duplicate EC context from the retrieved EVP_PKEY.*/
-
-    if ((*ec_context = EC_KEY_dup(EVP_PKEY_get0_EC_KEY(pkey))) != NULL) {
+    if ((*ec_context = EVP_PKEY_dup(pkey)) != NULL) {
         res = true;
     }
 
