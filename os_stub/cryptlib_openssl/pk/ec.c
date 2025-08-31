@@ -12,9 +12,109 @@
  **/
 
 #include "internal_crypt_lib.h"
+#include "openssl/configuration.h"
+#include "openssl/crypto.h"
+#include "openssl/evp.h"
 #include <openssl/bn.h>
+#include <openssl/err.h>
 #include <openssl/ec.h>
 #include <openssl/objects.h>
+#include <openssl/provider.h>
+#include <openssl/ssl.h>
+#include <string.h>
+
+
+static bool raw_to_der_signature(const unsigned char *raw_sig, size_t raw_len,
+                                unsigned char **der_sig, size_t *der_len)
+{
+    ECDSA_SIG *sig = NULL;
+    BIGNUM *r = NULL, *s = NULL;
+    size_t half_size = raw_len / 2;
+    int result_len;
+    bool result = false;
+
+    if (raw_len % 2 != 0) {
+        return false;
+    }
+
+    sig = ECDSA_SIG_new();
+    if (sig == NULL) {
+        return false;
+    }
+
+    r = BN_bin2bn(raw_sig, (int)half_size, NULL);
+    s = BN_bin2bn(raw_sig + half_size, (int)half_size, NULL);
+
+    if (r == NULL || s == NULL) {
+        goto cleanup;
+    }
+
+    if (ECDSA_SIG_set0(sig, r, s) != 1) {
+        goto cleanup;
+    }
+    r = NULL;
+    s = NULL;
+
+    result_len = i2d_ECDSA_SIG(sig, NULL);
+    if (result_len <= 0) {
+        goto cleanup;
+    }
+
+    *der_sig = OPENSSL_malloc(result_len);
+    if (*der_sig == NULL) {
+        goto cleanup;
+    }
+
+    unsigned char *der_ptr = *der_sig;
+    if (i2d_ECDSA_SIG(sig, &der_ptr) != result_len) {
+        OPENSSL_free(*der_sig);
+        *der_sig = NULL;
+        goto cleanup;
+    }
+
+    *der_len = result_len;
+    result = true;
+
+cleanup:
+    if (r != NULL) BN_free(r);
+    if (s != NULL) BN_free(s);
+    if (sig != NULL) ECDSA_SIG_free(sig);
+
+    return result;
+}
+
+static bool der_to_raw_rs(const uint8_t *der_sig, size_t der_sig_len,
+                        uint8_t *out_raw, size_t expected_half_size)
+{
+    const uint8_t *p = der_sig;
+    ECDSA_SIG *sig = d2i_ECDSA_SIG(NULL, &p, der_sig_len);
+    if (sig == NULL) {
+        printf("Failed to decode DER signature.\n");
+        return false;
+    }
+
+    const BIGNUM *r = NULL;
+    const BIGNUM *s = NULL;
+    ECDSA_SIG_get0(sig, &r, &s);
+
+    int r_len = BN_num_bytes(r);
+    int s_len = BN_num_bytes(s);
+
+    if (r_len > expected_half_size || s_len > expected_half_size) {
+        printf("Component longer than expected (%d vs %zu, %d vs %zu)\n", r_len, expected_half_size, s_len, expected_half_size);
+        ECDSA_SIG_free(sig);
+        return false;
+    }
+
+    memset(out_raw, 0, expected_half_size * 2);
+
+    BN_bn2binpad(r, out_raw, expected_half_size);
+    BN_bn2binpad(s, out_raw + expected_half_size, expected_half_size);
+
+    ECDSA_SIG_free(sig);
+    return true;
+}
+
 
 /**
  * Allocates and Initializes one Elliptic Curve context for subsequent use
@@ -28,15 +128,10 @@
  **/
 void *libspdm_ec_new_by_nid(size_t nid)
 {
-    EC_KEY *ec_key;
-    EC_GROUP *ec_group;
-    bool ret_val;
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pkey_ctx;
     int32_t openssl_nid;
 
-    ec_key = EC_KEY_new();
-    if (ec_key == NULL) {
-        return NULL;
-    }
     switch (nid) {
     case LIBSPDM_CRYPTO_NID_SECP256R1:
     case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P256:
@@ -51,21 +146,30 @@ void *libspdm_ec_new_by_nid(size_t nid)
         openssl_nid = NID_secp521r1;
         break;
     default:
-        EC_KEY_free(ec_key);
         return NULL;
     }
 
-    ec_group = EC_GROUP_new_by_curve_name(openssl_nid);
-    if (ec_group == NULL) {
-        EC_KEY_free(ec_key);
+    pkey_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (pkey_ctx == NULL) {
         return NULL;
     }
-    ret_val = (bool)EC_KEY_set_group(ec_key, ec_group);
-    EC_GROUP_free(ec_group);
-    if (!ret_val) {
-        return NULL;
+
+    if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pkey_ctx, openssl_nid) <= 0) {
+        goto cleanup;
     }
-    return (void *)ec_key;
+
+    if (EVP_PKEY_keygen_init(pkey_ctx) <= 0) {
+        goto cleanup;
+    }
+
+    if (EVP_PKEY_keygen(pkey_ctx, &pkey) <= 0) {
+        goto cleanup;
+    }
+
+cleanup:
+    EVP_PKEY_CTX_free(pkey_ctx);
+
+    return pkey;
 }
 
 /**
@@ -76,7 +180,7 @@ void *libspdm_ec_new_by_nid(size_t nid)
  **/
 void libspdm_ec_free(void *ec_context)
 {
-    EC_KEY_free((EC_KEY *)ec_context);
+    EVP_PKEY_free((EVP_PKEY *)ec_context);
 }
 
 /**
@@ -614,6 +718,14 @@ done:
     return ret_val;
 }
 
+static void print_hex(const char* label, uint8_t* buffer, size_t size) {
+    printf("%s: ", label);
+    for (int i = 0; i < size; i++) {
+        printf("%02x ", buffer[i]);
+    }
+    printf("\n");
+}
+
 /**
  * Carries out the EC-DSA signature.
  *
@@ -647,14 +759,11 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
                         const uint8_t *message_hash, size_t hash_size,
                         uint8_t *signature, size_t *sig_size)
 {
+    EVP_PKEY *evp_pkey = NULL;
     EC_KEY *ec_key;
-    ECDSA_SIG *ecdsa_sig;
     int32_t openssl_nid;
     uint8_t half_size;
-    BIGNUM *bn_r;
-    BIGNUM *bn_s;
-    int r_size;
-    int s_size;
+    bool result = false;
 
     if (ec_context == NULL || message_hash == NULL) {
         return false;
@@ -664,7 +773,8 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
         return false;
     }
 
-    ec_key = (EC_KEY *)ec_context;
+    evp_pkey = (EVP_PKEY *)ec_context;
+    ec_key = EVP_PKEY_get1_EC_KEY(evp_pkey);
     openssl_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
     switch (openssl_nid) {
     case NID_X9_62_prime256v1:
@@ -727,29 +837,91 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
         return false;
     }
 
-    ecdsa_sig = ECDSA_do_sign(message_hash, (uint32_t)hash_size,
-                              (EC_KEY *)ec_context);
-    if (ecdsa_sig == NULL) {
+    const EVP_MD *md_type = NULL;
+    switch (hash_nid) {
+        case LIBSPDM_CRYPTO_NID_SHA256:
+            md_type = EVP_sha256();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA384:
+            md_type = EVP_sha384();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA512:
+            md_type = EVP_sha512();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_256:
+            md_type = EVP_sha3_256();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_384:
+            md_type = EVP_sha3_384();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_512:
+            md_type = EVP_sha3_512();
+            break;
+        default:
+            return false;
+    }
+
+    // EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+    // if (md_ctx == NULL) {
+    //     return false;
+    // }
+
+    // OSSL_LIB_CTX* ossl_ctx = OSSL_LIB_CTX_new();
+    // if (ossl_ctx == NULL) {
+    //     return false;
+    // }
+
+    // if (!OSSL_PROVIDER_load(ossl_ctx, "tpm2")) {
+    //     return false;
+    // }
+
+    // if (!OSSL_PROVIDER_load(ossl_ctx, "default")) {
+    //     return false;
+    // }
+
+    OSSL_PROVIDER *tpm2_provider = OSSL_PROVIDER_load(NULL, "tpm2");
+    if (!tpm2_provider) {
         return false;
     }
 
-    ECDSA_SIG_get0(ecdsa_sig, (const BIGNUM **)&bn_r,
-                   (const BIGNUM **)&bn_s);
-
-    r_size = BN_num_bytes(bn_r);
-    s_size = BN_num_bytes(bn_s);
-    if (r_size <= 0 || s_size <= 0) {
-        ECDSA_SIG_free(ecdsa_sig);
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(NULL, evp_pkey, "provider=tpm2");
+    if (!ctx) {
         return false;
     }
-    LIBSPDM_ASSERT((size_t)r_size <= half_size && (size_t)s_size <= half_size);
 
-    BN_bn2bin(bn_r, &signature[0 + half_size - r_size]);
-    BN_bn2bin(bn_s, &signature[half_size + half_size - s_size]);
+    if (EVP_PKEY_sign_init(ctx) <= 0) {
+        goto cleanup_ctx;
+    }
 
-    ECDSA_SIG_free(ecdsa_sig);
+    if (EVP_PKEY_CTX_set_signature_md(ctx, md_type) <= 0) {
+        goto cleanup_ctx;
+    }
 
-    return true;
+    uint8_t *der_sign = NULL;
+    size_t der_sign_len = 0;
+
+    if (EVP_PKEY_sign(ctx, NULL, &der_sign_len, message_hash, hash_size) != 1) {
+        goto cleanup_ctx;
+    }
+
+    der_sign = OPENSSL_malloc(der_sign_len);
+    if (der_sign == NULL) {
+        goto cleanup_der;
+    }
+
+    if (EVP_PKEY_sign(ctx, der_sign, &der_sign_len, message_hash, hash_size) != 1) {
+        goto cleanup_der;
+    }
+
+    result = der_to_raw_rs(der_sign, der_sign_len, signature, half_size);
+
+cleanup_der:
+    OPENSSL_free(der_sign);
+
+cleanup_ctx:
+    EVP_PKEY_CTX_free(ctx);
+
+    return result;
 }
 
 /**
@@ -779,13 +951,13 @@ bool libspdm_ecdsa_verify(void *ec_context, size_t hash_nid,
                           const uint8_t *message_hash, size_t hash_size,
                           const uint8_t *signature, size_t sig_size)
 {
-    int32_t result;
+    EVP_PKEY *evp_pkey;
     EC_KEY *ec_key;
-    ECDSA_SIG *ecdsa_sig;
     int32_t openssl_nid;
     uint8_t half_size;
-    BIGNUM *bn_r;
-    BIGNUM *bn_s;
+    uint8_t *der_sig;
+    size_t der_sig_len;
+    bool result = false;
 
     if (ec_context == NULL || message_hash == NULL || signature == NULL) {
         return false;
@@ -795,7 +967,8 @@ bool libspdm_ecdsa_verify(void *ec_context, size_t hash_nid,
         return false;
     }
 
-    ec_key = (EC_KEY *)ec_context;
+    evp_pkey = (EVP_PKEY *)ec_context;
+    ec_key = EVP_PKEY_get1_EC_KEY(evp_pkey);
     openssl_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
     switch (openssl_nid) {
     case NID_X9_62_prime256v1:
@@ -855,32 +1028,59 @@ bool libspdm_ecdsa_verify(void *ec_context, size_t hash_nid,
         return false;
     }
 
-    ecdsa_sig = ECDSA_SIG_new();
-    if (ecdsa_sig == NULL) {
-        ECDSA_SIG_free(ecdsa_sig);
+    if (!raw_to_der_signature(signature, sig_size, &der_sig, &der_sig_len)) {
         return false;
     }
 
-    bn_r = BN_bin2bn(signature, (uint32_t)half_size, NULL);
-    bn_s = BN_bin2bn(signature + half_size, (uint32_t)half_size, NULL);
-    if (bn_r == NULL || bn_s == NULL) {
-        if (bn_r != NULL) {
-            BN_free(bn_r);
-        }
-        if (bn_s != NULL) {
-            BN_free(bn_s);
-        }
-        ECDSA_SIG_free(ecdsa_sig);
-        return false;
+    const EVP_MD *md_type = NULL;
+    switch (hash_nid) {
+        case LIBSPDM_CRYPTO_NID_SHA256:
+            md_type = EVP_sha256();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA384:
+            md_type = EVP_sha384();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA512:
+            md_type = EVP_sha512();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_256:
+            md_type = EVP_sha3_256();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_384:
+            md_type = EVP_sha3_384();
+            break;
+        case LIBSPDM_CRYPTO_NID_SHA3_512:
+            md_type = EVP_sha3_512();
+            break;
+        default:
+            goto cleanup_der;
     }
-    ECDSA_SIG_set0(ecdsa_sig, bn_r, bn_s);
 
-    result = ECDSA_do_verify(message_hash, (uint32_t)hash_size, ecdsa_sig,
-                             (EC_KEY *)ec_context);
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(NULL, evp_pkey, "provider=tpm2");
+    if (!ctx) {
+        printf("PROVIDER=TPM2 failed\n");
+        goto cleanup_der;
+    }
 
-    ECDSA_SIG_free(ecdsa_sig);
+    printf("PROVIDER=TPM2 passed\n");
 
-    return (result == 1);
+    if (EVP_PKEY_verify_init(ctx) <= 0) {
+        goto cleanup_pkey_ctx;
+    }
+
+    if (EVP_PKEY_CTX_set_signature_md(ctx, md_type) <= 0) {
+        goto cleanup_pkey_ctx;
+    }
+
+    result = EVP_PKEY_verify(ctx, der_sig, der_sig_len, message_hash, hash_size) == 1;
+
+cleanup_pkey_ctx:
+    EVP_PKEY_CTX_free(ctx);
+
+cleanup_der:
+    OPENSSL_free(der_sig);
+
+    return result;
 }
 
 #if LIBSPDM_FIPS_MODE
