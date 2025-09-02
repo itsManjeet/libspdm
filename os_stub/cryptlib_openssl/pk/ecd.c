@@ -128,10 +128,10 @@ bool libspdm_ecd_set_pub_key(void *ecd_context, const uint8_t *public_key,
         return false;
     }
 
-    if (evp_pkey_copy_downgraded(&evp_key, new_evp_key) != 1) {
-        EVP_PKEY_free(new_evp_key);
-        return false;
-    }
+    // if (evp_pkey_copy_downgraded(&evp_key, new_evp_key) != 1) {
+    //     EVP_PKEY_free(new_evp_key);
+    //     return false;
+    // }
 
     EVP_PKEY_free(new_evp_key);
     return true;
@@ -185,10 +185,10 @@ bool libspdm_ecd_set_pri_key(void *ecd_context, const uint8_t *private_key,
         return false;
     }
 
-    if (evp_pkey_copy_downgraded(&evp_key, new_evp_key) != 1) {
-        EVP_PKEY_free(new_evp_key);
-        return false;
-    }
+    // if (evp_pkey_copy_downgraded(&evp_key, new_evp_key) != 1) {
+    //     EVP_PKEY_free(new_evp_key);
+    //     return false;
+    // }
 
     EVP_PKEY_free(new_evp_key);
     return true;

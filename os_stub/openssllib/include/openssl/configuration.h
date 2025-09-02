@@ -197,9 +197,9 @@ typedef int64_t INT64;
 # ifndef OPENSSL_NO_ENGINE
 #  define OPENSSL_NO_ENGINE
 # endif
-# ifndef OPENSSL_NO_ERR
-#  define OPENSSL_NO_ERR
-# endif
+// # ifndef OPENSSL_NO_ERR
+// #  define OPENSSL_NO_ERR
+// # endif
 # ifndef OPENSSL_NO_EXTERNAL_TESTS
 #  define OPENSSL_NO_EXTERNAL_TESTS
 # endif
@@ -341,9 +341,9 @@ typedef int64_t INT64;
 # ifndef OPENSSL_NO_TLS_DEPRECATED_EC
 #  define OPENSSL_NO_TLS_DEPRECATED_EC
 # endif
-# ifndef OPENSSL_NO_TRACE
-#  define OPENSSL_NO_TRACE
-# endif
+// # ifndef OPENSSL_NO_TRACE
+// #  define OPENSSL_NO_TRACE
+// # endif
 # ifndef OPENSSL_NO_TS
 #  define OPENSSL_NO_TS
 # endif

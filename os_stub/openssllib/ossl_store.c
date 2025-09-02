@@ -5,7 +5,7 @@
  **/
 
 #include <openssl/store.h>       /* The OSSL_STORE_INFO type numbers */
-
+#include "openssl/crypto/store/store_local.h"
 /*
  * This function is cleanup ossl store.
  *
@@ -154,3 +154,20 @@ OSSL_STORE_SEARCH_free (
 {
 }
 
+EVP_PKEY *OSSL_STORE_INFO_get0_PKEY(const OSSL_STORE_INFO *info)
+{
+    if (info->type == OSSL_STORE_INFO_PKEY)
+        return info->_.pkey;
+    return NULL;
+}
+
+EVP_PKEY *OSSL_STORE_INFO_get1_PKEY(const OSSL_STORE_INFO *info)
+{
+    if (info->type == OSSL_STORE_INFO_PKEY) {
+        if (!EVP_PKEY_up_ref(info->_.pkey))
+            return NULL;
+        return info->_.pkey;
+    }
+    ERR_raise(ERR_LIB_OSSL_STORE, OSSL_STORE_R_NOT_A_PRIVATE_KEY);
+    return NULL;
+}

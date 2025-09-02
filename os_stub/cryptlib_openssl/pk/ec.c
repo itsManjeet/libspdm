@@ -13,6 +13,7 @@
 
 #include "internal_crypt_lib.h"
 #include "openssl/configuration.h"
+#include "openssl/core.h"
 #include "openssl/crypto.h"
 #include "openssl/evp.h"
 #include <openssl/bn.h>
@@ -22,7 +23,7 @@
 #include <openssl/provider.h>
 #include <openssl/ssl.h>
 #include <string.h>
-
+#include <dlfcn.h>
 
 static bool raw_to_der_signature(const unsigned char *raw_sig, size_t raw_len,
                                 unsigned char **der_sig, size_t *der_len)
@@ -718,6 +719,7 @@ done:
     return ret_val;
 }
 
+[[maybe_unused]]
 static void print_hex(const char* label, uint8_t* buffer, size_t size) {
     printf("%s: ", label);
     for (int i = 0; i < size; i++) {
@@ -861,28 +863,6 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
             return false;
     }
 
-    // EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
-    // if (md_ctx == NULL) {
-    //     return false;
-    // }
-
-    // OSSL_LIB_CTX* ossl_ctx = OSSL_LIB_CTX_new();
-    // if (ossl_ctx == NULL) {
-    //     return false;
-    // }
-
-    // if (!OSSL_PROVIDER_load(ossl_ctx, "tpm2")) {
-    //     return false;
-    // }
-
-    // if (!OSSL_PROVIDER_load(ossl_ctx, "default")) {
-    //     return false;
-    // }
-
-    OSSL_PROVIDER *tpm2_provider = OSSL_PROVIDER_load(NULL, "tpm2");
-    if (!tpm2_provider) {
-        return false;
-    }
 
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(NULL, evp_pkey, "provider=tpm2");
     if (!ctx) {
@@ -910,8 +890,10 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
     }
 
     if (EVP_PKEY_sign(ctx, der_sign, &der_sign_len, message_hash, hash_size) != 1) {
+        printf("ERROR: EVP_PKEY_sign failed\n");
         goto cleanup_der;
     }
+    printf("SUCCESS: EVP_PKEY_sign SUCCESS\n");
 
     result = der_to_raw_rs(der_sign, der_sign_len, signature, half_size);
 

@@ -12,9 +12,18 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <openssl/store.h>
+#include <dlfcn.h>
+#include <openssl/err.h>
+#include <openssl/provider.h>
 
 #include <base.h>
 #include "library/memlib.h"
+#include "openssllib/openssl/include/openssl/evp.h"
+#include "openssllib/openssl/include/openssl/provider.h"
+#include "openssllib/openssl/include/openssl/store.h"
+#include "openssllib/openssl_gen/openssl/crypto.h"
+#include "openssllib/openssl_gen/openssl/err.h"
 #include "spdm_device_secret_lib_internal.h"
 #include "internal/libspdm_common_lib.h"
 
@@ -118,19 +127,106 @@ bool libspdm_responder_data_sign(
         void *private_pem;
         size_t private_pem_size;
 
-        result = libspdm_read_responder_private_key(
-            base_asym_algo, &private_pem, &private_pem_size);
-        if (!result) {
+        // result = libspdm_read_responder_private_key(
+        //     base_asym_algo, &private_pem, &private_pem_size);
+        // if (!result) {
+        //     return false;
+        // }
+
+        // result = libspdm_asym_get_private_key_from_pem(
+        //     base_asym_algo, private_pem, private_pem_size, NULL, &context);
+        // if (!result) {
+        //     libspdm_zero_mem(private_pem, private_pem_size);
+        //     free(private_pem);
+        //     return false;
+        // }
+        //
+
+        OSSL_STORE_INFO *info = NULL;
+        EVP_PKEY *pkey = NULL;
+
+        OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
+
+        OSSL_PROVIDER_set_default_search_path(libctx, "/usr/lib/aarch64-linux-gnu/ossl-modules/");
+
+        void *tpm2_handler = dlopen("/usr/lib/aarch64-linux-gnu/ossl-modules/tpm2.so", RTLD_GLOBAL | RTLD_NOW);
+        if (tpm2_handler == NULL) {
+            printf("ERROR: %s\n", dlerror());
             return false;
         }
 
-        result = libspdm_asym_get_private_key_from_pem(
-            base_asym_algo, private_pem, private_pem_size, NULL, &context);
-        if (!result) {
-            libspdm_zero_mem(private_pem, private_pem_size);
-            free(private_pem);
+        int (*tpm2_init_fun)(const OSSL_CORE_HANDLE *handle,
+                                            const OSSL_DISPATCH *in,
+                                            const OSSL_DISPATCH **out,
+                                            void **provctx) =  dlsym(tpm2_handler, "OSSL_provider_init");
+
+        if (tpm2_init_fun == NULL) {
+            printf("ERROR: %s\n", dlerror());
+            dlclose(tpm2_handler);
             return false;
         }
+
+        if (OSSL_PROVIDER_add_builtin(libctx, "tpm2", tpm2_init_fun) <=0) {
+            printf("TPM2_add builtin failed\n");
+            return false;
+        }
+
+        const char* search_path = OSSL_PROVIDER_get0_default_search_path(libctx);
+        printf("SEARCH_PATH: %s\n", search_path);
+
+        OSSL_PROVIDER *tpm2_provider = OSSL_PROVIDER_load(libctx, "tpm2");
+        if (!tpm2_provider) {
+            unsigned int err = ERR_get_error();
+            printf("ERROR: %s\n",ERR_reason_error_string(err));
+            return false;
+        }
+
+        if (OSSL_PROVIDER_self_test(tpm2_provider) <= 0) {
+            unsigned int err = ERR_get_error();
+            printf("ERROR: %s\n",ERR_reason_error_string(err));
+            OSSL_PROVIDER_unload(tpm2_provider);
+            dlclose(tpm2_handler);
+            return false;
+        }
+
+        if (OSSL_PROVIDER_available(libctx, "tpm2")) {
+            printf("TPM2 provider is available.\n");
+        } else {
+            printf("TPM2 provider is not available.\n");
+        }
+
+
+        OSSL_PROVIDER *default_provider = OSSL_PROVIDER_load(libctx, "default");
+        if (!default_provider) {
+            return false;
+        }
+
+        OSSL_STORE_CTX* store_ctx = OSSL_STORE_open_ex("handle:0x81010002", libctx, "?provider=tpm2", NULL, NULL, NULL, NULL, NULL);
+        if (!store_ctx) {
+            unsigned int err = ERR_get_error();
+            printf("ERROR: store_ctx %d %s\n", err, ERR_reason_error_string(err));
+            return false;
+        }
+
+        printf("STORE_CTX: got handle %p\n", store_ctx);
+
+        static int counter = 0;
+        while ((info = OSSL_STORE_load(store_ctx)) != NULL) {
+            printf("info counter = %d\n", counter);
+            if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY) {
+                printf("Got key at %d\n", counter);
+                pkey = OSSL_STORE_INFO_get1_PKEY(info);
+                printf("Got key at %d DONE\n", counter);
+                break;
+            }
+        }
+        if (pkey == NULL) {
+            printf("PKEY == null\n");
+            return false;
+        }
+
+        printf("PKEY got %p\n", pkey);
+        context = (void *) pkey;
 
         if (is_data_hash) {
             result = libspdm_asym_sign_hash(spdm_version, op_code, base_asym_algo, base_hash_algo,
