@@ -32,9 +32,9 @@ bool libspdm_validate_crypt_ec(void)
 {
     void *ec1;
     void *ec2;
-    uint8_t public1[66 * 2];
+    uint8_t public1[66 * 2 + 1];
     size_t public1_length;
-    uint8_t public2[66 * 2];
+    uint8_t public2[66 * 2 + 1];
     size_t public2_length;
     uint8_t key1[66];
     size_t key1_length;
