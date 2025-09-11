@@ -549,7 +549,7 @@ extern bool libspdm_hkdf_sm3_256_extract_and_expand(const uint8_t *key, size_t k
  * @retval  false  Invalid EC private key component.
  *
  **/
-extern bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
+extern bool libspdm_ec_set_priv_key(void **ec_context, const uint8_t *private_key,
                                     size_t private_key_size);
 
 /**
@@ -566,7 +566,7 @@ extern bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key
  * @retval  true   EC public key component was set successfully.
  * @retval  false  Invalid EC public key component.
  **/
-extern bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
+extern bool libspdm_ec_set_pub_key(void **ec_context, const uint8_t *public_key,
                                    size_t public_key_size);
 
 /**

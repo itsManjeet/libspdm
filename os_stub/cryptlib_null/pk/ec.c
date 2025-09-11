@@ -55,7 +55,7 @@ void libspdm_ec_free(void *ec_context)
  * @retval  false  Invalid EC public key component.
  *
  **/
-bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
+bool libspdm_ec_set_pub_key(void **ec_context, const uint8_t *public_key,
                             size_t public_key_size)
 {
     LIBSPDM_ASSERT(false);
@@ -77,7 +77,7 @@ bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
  * @retval  false  Invalid EC private key component.
  *
  **/
-bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
+bool libspdm_ec_set_priv_key(void **ec_context, const uint8_t *private_key,
                              size_t private_key_size)
 {
     LIBSPDM_ASSERT(false);
@@ -140,7 +140,7 @@ bool libspdm_ecdsa_sign_ex(void *ec_context, size_t hash_nid,
  * @retval false  public_size is not large enough.
  *
  **/
-bool libspdm_ec_generate_key(void *ec_context, uint8_t *public_data,
+bool libspdm_ec_generate_key(void **ec_context, uint8_t *public_data,
                              size_t *public_size)
 {
     LIBSPDM_ASSERT(false);

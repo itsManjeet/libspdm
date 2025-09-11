@@ -191,12 +191,12 @@ bool libspdm_get_responder_private_key_from_raw_data(uint32_t base_asym_algo, vo
         if (ec_context == NULL) {
             return false;
         }
-        result = libspdm_ec_set_pub_key(ec_context, ec_public, ec_public_size);
+        result = libspdm_ec_set_pub_key(&ec_context, ec_public, ec_public_size);
         if (!result) {
             libspdm_ec_free(ec_context);
             return false;
         }
-        result = libspdm_ec_set_priv_key(ec_context, ec_private, ec_private_size);
+        result = libspdm_ec_set_priv_key(&ec_context, ec_private, ec_private_size);
         if (!result) {
             libspdm_ec_free(ec_context);
             return false;
@@ -337,12 +337,12 @@ bool libspdm_get_requester_private_key_from_raw_data(uint32_t base_asym_algo, vo
         if (ec_context == NULL) {
             return false;
         }
-        result = libspdm_ec_set_pub_key(ec_context, ec_public, ec_public_size);
+        result = libspdm_ec_set_pub_key(&ec_context, ec_public, ec_public_size);
         if (!result) {
             libspdm_ec_free(ec_context);
             return false;
         }
-        result = libspdm_ec_set_priv_key(ec_context, ec_private, ec_private_size);
+        result = libspdm_ec_set_priv_key(&ec_context, ec_private, ec_private_size);
         if (!result) {
             libspdm_ec_free(ec_context);
             return false;

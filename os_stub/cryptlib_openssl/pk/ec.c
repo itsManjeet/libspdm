@@ -12,7 +12,13 @@
  **/
 
 #include "internal_crypt_lib.h"
+#include "library/cryptlib.h"
 #include "library/memlib.h"
+#include "openssl/crypto.h"
+#include "openssl/err.h"
+#include "openssl/obj_mac.h"
+#include "openssl/param_build.h"
+#include "openssl/params.h"
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
@@ -45,6 +51,16 @@ static inline int evp_pkey_get_half_size(EVP_PKEY *evp_pkey) {
     }
 }
 
+[[maybe_unused]]
+static inline const char* evp_pkey_get_curve_name(EVP_PKEY *evp_pkey) {
+    switch (EVP_PKEY_bits(evp_pkey)) {
+    case 256: return "prime256v1";
+    case 384: return "secp384r1";
+    case 521: return "secp521r1";
+    default: return NULL;
+    }
+}
+
 /**
  * Allocates and Initializes one Elliptic Curve context for subsequent use
  * with the NID.
@@ -58,8 +74,9 @@ static inline int evp_pkey_get_half_size(EVP_PKEY *evp_pkey) {
 void *libspdm_ec_new_by_nid(size_t nid)
 {
     EVP_PKEY *pkey = NULL;
-    EVP_PKEY_CTX *pkey_ctx;
-    const char* curve_name = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    OSSL_PARAM params[2];
+    const char* curve_name;
 
     switch (nid) {
     case LIBSPDM_CRYPTO_NID_SECP256R1:
@@ -78,25 +95,24 @@ void *libspdm_ec_new_by_nid(size_t nid)
         return NULL;
     }
 
-    pkey_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
-    if (pkey_ctx == NULL) {
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *) curve_name, 0);
+    params[1] = OSSL_PARAM_construct_end();
+
+    pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (pctx == NULL) {
         return NULL;
     }
 
-    if (EVP_PKEY_keygen_init(pkey_ctx) <= 0) {
+    if (EVP_PKEY_fromdata_init(pctx) <= 0) {
         goto cleanup;
     }
 
-    if (EVP_PKEY_CTX_set_group_name(pkey_ctx, curve_name) <= 0) {
-        goto cleanup;
-    }
-
-    if (EVP_PKEY_keygen(pkey_ctx, &pkey) <= 0) {
+    if (EVP_PKEY_fromdata(pctx, &pkey, EVP_PKEY_KEY_PARAMETERS, params) <= 0) {
         goto cleanup;
     }
 
 cleanup:
-    EVP_PKEY_CTX_free(pkey_ctx);
+    EVP_PKEY_CTX_free(pctx);
 
     return pkey;
 }
@@ -127,39 +143,53 @@ void libspdm_ec_free(void *ec_context)
  * @retval  false  Invalid EC public key component.
  *
  **/
-bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
+bool libspdm_ec_set_pub_key(void **ec_context, const uint8_t *public_key,
                             size_t public_key_size)
 {
-    EVP_PKEY *new_evp_pkey;
-    EVP_PKEY *evp_pkey;
-    size_t half_size;
+    bool result = false;
+    EVP_PKEY *evp_pkey, *new_evp_pkey;
+    EVP_PKEY_CTX *ctx = NULL;
+    OSSL_PARAM params[3];
 
-    if (ec_context == NULL || public_key == NULL) {
+    evp_pkey = (EVP_PKEY *) *ec_context;
+    if (EVP_PKEY_get_base_id(evp_pkey) != EVP_PKEY_EC) {
         return false;
     }
 
-    evp_pkey = (EVP_PKEY *)ec_context;
-    half_size = evp_pkey_get_half_size(evp_pkey);
-    if (public_key_size != half_size * 2) {
+    const char* curve_name = evp_pkey_get_curve_name(evp_pkey);
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *) curve_name, 0);
+    params[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY, (void *) public_key, public_key_size);
+    params[2] = OSSL_PARAM_construct_end();
+
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (ctx == NULL) {
         return false;
     }
 
-    new_evp_pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_id(evp_pkey), NULL,
-                                               public_key, public_key_size);
-
-    if (new_evp_pkey == NULL) {
-        return false;
+    if (EVP_PKEY_fromdata_init(ctx) <= 0) {
+        goto cleanup_ctx;
     }
 
-    if (evp_pkey_copy_downgraded(&evp_pkey, new_evp_pkey) != 1) {
-        EVP_PKEY_free(new_evp_pkey);
-        return false;
+    new_evp_pkey = NULL;
+    if (EVP_PKEY_fromdata(ctx, &new_evp_pkey, EVP_PKEY_KEYPAIR, params) <= 0) {
+        goto cleanup_ctx;
     }
 
-    EVP_PKEY_free(new_evp_pkey);
-    return true;
+    *ec_context = new_evp_pkey;
+    EVP_PKEY_free(evp_pkey);
+    result = true;
+
+cleanup_ctx:
+    EVP_PKEY_CTX_free(ctx);
+
+    return result;
 }
 
+
+int display_error(const char* mesg, size_t size, void* _) {
+    printf("ERROR: %.*s\n", size, mesg);
+    return 1;
+}
 /**
  * Sets the private key component into the established EC context.
  *
@@ -175,37 +205,46 @@ bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
  * @retval  false  Invalid EC private key component.
  *
  **/
-bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
+bool libspdm_ec_set_priv_key(void **ec_context, const uint8_t *private_key,
                              size_t private_key_size)
 {
-    EVP_PKEY *new_evp_pkey;
-    EVP_PKEY *evp_pkey;
-    size_t half_size;
+    bool result = false;
+    EVP_PKEY *evp_pkey, *new_evp_pkey;
+    EVP_PKEY_CTX *ctx = NULL;
+    OSSL_PARAM params[3];
 
-    if (ec_context == NULL || private_key == NULL) {
+    evp_pkey = (EVP_PKEY *) *ec_context;
+    if (EVP_PKEY_get_base_id(evp_pkey) != EVP_PKEY_EC) {
         return false;
     }
 
-    evp_pkey = (EVP_PKEY *)ec_context;
-    half_size = evp_pkey_get_half_size(evp_pkey);
-    if (private_key_size != half_size * 2) {
+    const char* curve_name = evp_pkey_get_curve_name(evp_pkey);
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *) curve_name, 0);
+    params[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY, (void *) private_key, private_key_size);
+    params[2] = OSSL_PARAM_construct_end();
+
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (ctx == NULL) {
         return false;
     }
 
-    new_evp_pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_id(evp_pkey), NULL,
-                                                private_key, private_key_size);
-
-    if (new_evp_pkey == NULL) {
-        return false;
+    if (EVP_PKEY_fromdata_init(ctx) <= 0) {
+        goto cleanup_ctx;
     }
 
-    if (evp_pkey_copy_downgraded(&evp_pkey, new_evp_pkey) != 1) {
-        EVP_PKEY_free(new_evp_pkey);
-        return false;
+    new_evp_pkey = NULL;
+    if (EVP_PKEY_fromdata(ctx, &new_evp_pkey, EVP_PKEY_KEYPAIR, params) <= 0) {
+        goto cleanup_ctx;
     }
 
-    EVP_PKEY_free(new_evp_pkey);
-    return true;
+    *ec_context = new_evp_pkey;
+    EVP_PKEY_free(evp_pkey);
+    result = true;
+
+cleanup_ctx:
+    EVP_PKEY_CTX_free(ctx);
+
+    return result;
 }
 
 /**
@@ -227,9 +266,8 @@ bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
 bool libspdm_ec_get_pub_key(void *ec_context, uint8_t *public_key,
                             size_t *public_key_size)
 {
-    int32_t result;
     EVP_PKEY *evp_pkey;
-    size_t half_size;
+    size_t len = 0;
 
     if (ec_context == NULL || public_key == NULL ||
         public_key_size == NULL) {
@@ -237,16 +275,21 @@ bool libspdm_ec_get_pub_key(void *ec_context, uint8_t *public_key,
     }
 
     evp_pkey = (EVP_PKEY *)ec_context;
-    half_size = evp_pkey_get_half_size(evp_pkey);
-    if (*public_key_size < half_size * 2) {
-        *public_key_size = half_size * 2;
+    if (EVP_PKEY_get_octet_string_param(evp_pkey, OSSL_PKEY_PARAM_PUB_KEY, NULL, 0, &len) <= 0) {
         return false;
     }
-    *public_key_size = half_size * 2;
-    libspdm_zero_mem(public_key, *public_key_size);
 
-    result = EVP_PKEY_get_raw_public_key(evp_pkey, public_key, public_key_size);
-    return result == 0;
+    if (*public_key_size < len) {
+        *public_key_size = len;
+        return false;
+    }
+
+    *public_key_size = len;
+    if (EVP_PKEY_get_octet_string_param(evp_pkey, OSSL_PKEY_PARAM_PUB_KEY, public_key, len, public_key_size) <= 0) {
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -312,87 +355,88 @@ bool libspdm_ec_check_key(const void *ec_context)
  * @retval false  public_size is not large enough.
  *
  **/
-bool libspdm_ec_generate_key(void *ec_context, uint8_t *public_data,
+bool libspdm_ec_generate_key(void **ec_context, uint8_t *public_data,
                              size_t *public_size)
 {
-    const EC_KEY *ec_key;
-    EVP_PKEY *evp_pkey;
-    const EC_GROUP *ec_group;
-    bool ret_val;
-    const EC_POINT *ec_point;
-    BIGNUM *bn_x;
-    BIGNUM *bn_y;
-    size_t half_size;
-    int x_size;
-    int y_size;
+    EVP_PKEY *evp_pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *gen_pkey = NULL;
+    bool result = false;
+    /* uint8_t *private_key;
+     * size_t private_key_size; */
 
-    if (ec_context == NULL || public_size == NULL) {
-        return false;
-    }
-
-    if (public_data == NULL && *public_size != 0) {
-        return false;
-    }
-
-    evp_pkey = (EVP_PKEY *)ec_context;
+    evp_pkey = (EVP_PKEY *) *ec_context;
     if (EVP_PKEY_get_base_id(evp_pkey) != EVP_PKEY_EC) {
         return false;
     }
 
-    ec_key = EVP_PKEY_get0_EC_KEY(evp_pkey);
-    ret_val = (bool)EC_KEY_generate_key((EC_KEY *)ec_key);
-    if (!ret_val) {
-        return false;
-    }
-    half_size = evp_pkey_get_half_size(evp_pkey);
-    if (*public_size < half_size * 2) {
-        *public_size = half_size * 2;
-        return false;
-    }
-    *public_size = half_size * 2;
-
-    ec_group = EC_KEY_get0_group(ec_key);
-    ec_point = EC_KEY_get0_public_key(ec_key);
-    if (ec_point == NULL) {
+    pctx = EVP_PKEY_CTX_new(evp_pkey, NULL);
+    if (pctx == NULL) {
         return false;
     }
 
-    bn_x = BN_new();
-    bn_y = BN_new();
-    if (bn_x == NULL || bn_y == NULL) {
-        ret_val = false;
-        goto done;
+    if (EVP_PKEY_keygen_init(pctx) <= 0) {
+        goto cleanup_ctx;
     }
 
-    ret_val = (bool)EC_POINT_get_affine_coordinates(ec_group, ec_point,
-                                                    bn_x, bn_y, NULL);
-    if (!ret_val) {
-        goto done;
+    if (EVP_PKEY_keygen(pctx, &gen_pkey) <= 0) {
+        goto cleanup_ctx;
     }
 
-    x_size = BN_num_bytes(bn_x);
-    y_size = BN_num_bytes(bn_y);
-    if (x_size <= 0 || y_size <= 0) {
-        ret_val = false;
-        goto done;
+    size_t len = 0;
+    if (EVP_PKEY_get_octet_string_param(gen_pkey, OSSL_PKEY_PARAM_PUB_KEY, NULL, 0, &len) <= 0) {
+        goto cleanup_gen_pkey;
     }
-    LIBSPDM_ASSERT((size_t)x_size <= half_size && (size_t)y_size <= half_size);
 
-    if (public_data != NULL) {
-        libspdm_zero_mem(public_data, *public_size);
-        BN_bn2bin(bn_x, &public_data[0 + half_size - x_size]);
-        BN_bn2bin(bn_y, &public_data[half_size + half_size - y_size]);
+    if (*public_size < len) {
+        *public_size = len;
+        goto cleanup_gen_pkey;
     }
-    ret_val = true;
 
-done:
-    if (bn_x != NULL) {
-        BN_free(bn_x);
+    *public_size = len;
+    if (EVP_PKEY_get_octet_string_param(gen_pkey, OSSL_PKEY_PARAM_PUB_KEY, public_data, len, public_size) <= 0) {
+        goto cleanup_gen_pkey;
     }
-    if (bn_y != NULL) {
-        BN_free(bn_y);
+
+    *ec_context = gen_pkey;
+    gen_pkey = evp_pkey; /* swap for cleanup */
+    result = true;
+
+cleanup_gen_pkey:
+    EVP_PKEY_free(gen_pkey);
+
+cleanup_ctx:
+    EVP_PKEY_CTX_free(pctx);
+
+    return result;
+}
+
+EVP_PKEY *import_peer_pubkey(const char* curve_name, const unsigned char *pub, size_t pub_len) {
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    if (!ctx) return NULL;
+
+    EVP_PKEY *pkey = NULL;
+
+    if (EVP_PKEY_fromdata_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return NULL;
     }
-    return ret_val;
+
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                         (void *) curve_name, 0),
+        OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                          (void *)pub, pub_len),
+        OSSL_PARAM_construct_end()
+    };
+
+    if (EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return NULL;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+    return pkey;
 }
 
 /**
@@ -429,84 +473,38 @@ bool libspdm_ec_compute_key(void *ec_context, const uint8_t *peer_public,
                             size_t peer_public_size, uint8_t *key,
                             size_t *key_size)
 {
-    const EC_KEY *ec_key;
-    EVP_PKEY *evp_pkey = NULL;
-    const EC_GROUP *ec_group;
-    bool ret_val;
-    BIGNUM *bn_x;
-    BIGNUM *bn_y;
-    EC_POINT *ec_point;
-    size_t half_size;
-    int size;
-
-    if (ec_context == NULL || peer_public == NULL || key_size == NULL ||
-        key == NULL) {
-        return false;
-    }
-
-    if (peer_public_size > INT_MAX) {
-        return false;
-    }
+    EVP_PKEY *evp_pkey;
+    EVP_PKEY *peer_pkey;
+    EVP_PKEY_CTX *ctx = NULL;
 
     evp_pkey = (EVP_PKEY *) ec_context;
     if (EVP_PKEY_get_base_id(evp_pkey) != EVP_PKEY_EC) {
         return false;
     }
 
-    ec_key = EVP_PKEY_get0_EC_KEY(evp_pkey);
-    half_size = evp_pkey_get_half_size(evp_pkey);
-    if (peer_public_size != half_size * 2) {
+    peer_pkey = import_peer_pubkey(evp_pkey_get_curve_name(evp_pkey),peer_public, peer_public_size);
+    if (peer_pkey == NULL) {
         return false;
     }
 
-    ec_group = EC_KEY_get0_group(ec_key);
-    ec_point = NULL;
-
-    bn_x = BN_bin2bn(peer_public, (uint32_t)half_size, NULL);
-    bn_y = BN_bin2bn(peer_public + half_size, (uint32_t)half_size, NULL);
-    if (bn_x == NULL || bn_y == NULL) {
-        ret_val = false;
-        goto done;
-    }
-    ec_point = EC_POINT_new(ec_group);
-    if (ec_point == NULL) {
-        ret_val = false;
-        goto done;
+    ctx = EVP_PKEY_CTX_new(evp_pkey, NULL);
+    if (ctx == NULL) {
+        return false;
     }
 
-    ret_val = (bool)EC_POINT_set_affine_coordinates(ec_group, ec_point,
-                                                    bn_x, bn_y, NULL);
-    if (!ret_val) {
-        goto done;
+    if (EVP_PKEY_derive_init(ctx) <= 0) {
+        return false;
     }
 
-    size = ECDH_compute_key(key, *key_size, ec_point, ec_key, NULL);
-    if (size < 0) {
-        ret_val = false;
-        goto done;
+    if (EVP_PKEY_derive_set_peer(ctx, peer_pkey) <= 0) {
+        return false;
     }
 
-    if (*key_size < (size_t)size) {
-        *key_size = size;
-        ret_val = false;
-        goto done;
+    if (EVP_PKEY_derive(ctx, key, key_size) <= 0) {
+        return false;
     }
 
-    *key_size = size;
-
-    ret_val = true;
-
-done:
-    if (bn_x != NULL) {
-        BN_free(bn_x);
-    }
-    if (bn_y != NULL) {
-        BN_free(bn_y);
-    }
-    if (ec_point != NULL) {
-        EC_POINT_free(ec_point);
-    }
-    return ret_val;
+    return true;
 }
 
 /**
@@ -631,16 +629,17 @@ bool libspdm_ecdsa_sign(void *ec_context, size_t hash_nid,
     uint8_t *der_sign = NULL;
     size_t der_sign_len = 0;
 
-    if (EVP_PKEY_sign(ctx, NULL, &der_sign_len, message_hash, hash_size) != 1) {
+    if (EVP_PKEY_sign(ctx, NULL, &der_sign_len, message_hash, hash_size) <= 0) {
         goto cleanup_ctx;
     }
+    der_sign_len += 1;
 
     der_sign = OPENSSL_malloc(der_sign_len);
     if (der_sign == NULL) {
         goto cleanup_der;
     }
 
-    if (EVP_PKEY_sign(ctx, der_sign, &der_sign_len, message_hash, hash_size) != 1) {
+    if (EVP_PKEY_sign(ctx, der_sign, &der_sign_len, message_hash, hash_size) <= 0) {
         goto cleanup_der;
     }
 

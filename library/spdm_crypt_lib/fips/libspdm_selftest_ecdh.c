@@ -72,7 +72,7 @@ bool libspdm_fips_selftest_ecdh(void *fips_selftest_context)
         goto update;
     }
 
-    result = libspdm_ec_set_priv_key(ec_context, self_privkey, sizeof(self_privkey));
+    result = libspdm_ec_set_priv_key(&ec_context, self_privkey, sizeof(self_privkey));
     if (!result) {
         LIBSPDM_DEBUG((LIBSPDM_DEBUG_INFO, "ECDH set private key failed \n"));
         libspdm_ec_free(ec_context);

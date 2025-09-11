@@ -45,7 +45,7 @@ extern void libspdm_ec_free(void *ec_context);
  * @retval  false  Invalid EC private key component.
  *
  **/
-extern bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
+extern bool libspdm_ec_set_priv_key(void **ec_context, const uint8_t *private_key,
                                     size_t private_key_size);
 
 /**
@@ -62,7 +62,7 @@ extern bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key
  * @retval  true   EC public key component was set successfully.
  * @retval  false  Invalid EC public key component.
  **/
-extern bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
+extern bool libspdm_ec_set_pub_key(void **ec_context, const uint8_t *public_key,
                                    size_t public_key_size);
 #endif /* LIBSPDM_FIPS_MODE */
 
@@ -97,7 +97,7 @@ extern bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
  * @retval false  EC public X,Y generation failed.
  * @retval false  public_size is not large enough.
  **/
-extern bool libspdm_ec_generate_key(void *ec_context, uint8_t *public_key, size_t *public_key_size);
+extern bool libspdm_ec_generate_key(void **ec_context, uint8_t *public_key, size_t *public_key_size);
 
 /**
  * Computes exchanged common key.

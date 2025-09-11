@@ -92,7 +92,7 @@ void libspdm_ec_free(void *ec_context)
  * @retval  false  Invalid EC public key component.
  *
  **/
-bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
+bool libspdm_ec_set_pub_key(void **ec_context, const uint8_t *public_key,
                             size_t public_key_size)
 {
     mbedtls_ecdh_context *ctx;
@@ -154,7 +154,7 @@ bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
  * @retval  false  Invalid EC private key component.
  *
  **/
-bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
+bool libspdm_ec_set_priv_key(void **ec_context, const uint8_t *private_key,
                              size_t private_key_size)
 {
     mbedtls_ecdh_context *ctx;
@@ -165,7 +165,7 @@ bool libspdm_ec_set_priv_key(void *ec_context, const uint8_t *private_key,
         return false;
     }
 
-    ctx = ec_context;
+    ctx = *ec_context;
     switch (mbedtls_ecdh_get_grp_id(ctx)) {
     case MBEDTLS_ECP_DP_SECP256R1:
         half_size = 32;

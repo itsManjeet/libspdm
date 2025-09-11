@@ -100,7 +100,7 @@ bool libspdm_fips_selftest_ecdsa(void *fips_selftest_context)
         goto update;
     }
 
-    result = libspdm_ec_set_pub_key(ec_context, public_key, sizeof(public_key));
+    result = libspdm_ec_set_pub_key(&ec_context, public_key, sizeof(public_key));
     if (!result) {
         LIBSPDM_DEBUG((LIBSPDM_DEBUG_INFO, "ec_context set pub_key failed \n"));
         libspdm_ec_free(ec_context);
@@ -108,7 +108,7 @@ bool libspdm_fips_selftest_ecdsa(void *fips_selftest_context)
         goto update;
     }
 
-    result = libspdm_ec_set_priv_key(ec_context, priv_key, sizeof(priv_key));
+    result = libspdm_ec_set_priv_key(&ec_context, priv_key, sizeof(priv_key));
     if (!result) {
         LIBSPDM_DEBUG((LIBSPDM_DEBUG_INFO, "ec_context set priv_key failed \n"));
         libspdm_ec_free(ec_context);
