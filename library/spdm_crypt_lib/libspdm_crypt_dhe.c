@@ -36,19 +36,31 @@ uint32_t libspdm_get_dhe_pub_key_size(uint16_t dhe_named_group)
 #endif
     case SPDM_ALGORITHMS_DHE_NAMED_GROUP_SECP_256_R1:
 #if LIBSPDM_ECDHE_P256_SUPPORT
-        return 32 * 2;
+        return 32 * 2
+#if LIBSPDM_CRYPTO_IS_OPENSSL
+               + 1
+#endif
+        ;
 #else
         return 0;
 #endif
     case SPDM_ALGORITHMS_DHE_NAMED_GROUP_SECP_384_R1:
 #if LIBSPDM_ECDHE_P384_SUPPORT
-        return 48 * 2;
+        return 48 * 2
+#if LIBSPDM_CRYPTO_IS_OPENSSL
+               + 1
+#endif
+        ;
 #else
         return 0;
 #endif
     case SPDM_ALGORITHMS_DHE_NAMED_GROUP_SECP_521_R1:
 #if LIBSPDM_ECDHE_P521_SUPPORT
-        return 66 * 2;
+        return 66 * 2
+#if LIBSPDM_CRYPTO_IS_OPENSSL
+               + 1
+#endif
+        ;
 #else
         return 0;
 #endif
