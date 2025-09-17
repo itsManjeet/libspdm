@@ -447,7 +447,7 @@ bool libspdm_ec_compute_key(void *ec_context, const uint8_t *peer_public,
                             size_t *key_size)
 {
     EVP_PKEY *evp_pkey;
-    EVP_PKEY *peer_pkey;
+    EVP_PKEY *peer_pkey = NULL;
     EVP_PKEY_CTX *ctx = NULL;
     uint8_t *compatible_key = NULL;
     size_t compatible_key_size = 0;
@@ -464,29 +464,35 @@ bool libspdm_ec_compute_key(void *ec_context, const uint8_t *peer_public,
 
     peer_pkey = import_peer_pubkey(evp_pkey_get_curve_name(evp_pkey), compatible_key, compatible_key_size);
     if (peer_pkey == NULL) {
-        goto cleanup;
+        goto cleanup_comp;
     }
 
     ctx = EVP_PKEY_CTX_new(evp_pkey, NULL);
     if (ctx == NULL) {
-        goto cleanup;
+        goto cleanup_peer;
     }
 
     if (EVP_PKEY_derive_init(ctx) <= 0) {
-        goto cleanup;
+        goto cleanup_ctx;
     }
 
     if (EVP_PKEY_derive_set_peer(ctx, peer_pkey) <= 0) {
-        goto cleanup;
+        goto cleanup_ctx;
     }
 
     if (EVP_PKEY_derive(ctx, key, key_size) <= 0) {
-        goto cleanup;
+        goto cleanup_ctx;
     }
 
     result = true;
 
-cleanup:
+cleanup_ctx:
+    EVP_PKEY_CTX_free(ctx);
+
+cleanup_peer:
+    EVP_PKEY_free(peer_pkey);
+
+cleanup_comp:
     if (owned) {
         OPENSSL_free(compatible_key);
     }
