@@ -75,9 +75,9 @@ jobs:
             toolchain: CLANG
           - crypto: mbedtls
             toolchain: CLANG
-          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=0 -DLIBSPDM_FIPS_MODE=0"
+          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=0 -DLIBSPDM_FIPS_MODE=0 -DLIBSPDM_ENABLE_CAPABILITY_CSR_CAP_EX=0"
             toolchain: CLANG
-          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1"
+          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1 -DLIBSPDM_ENABLE_CAPABILITY_CSR_CAP_EX=1"
             toolchain: CLANG
           - arch: aarch64
             toolchain: GCC
@@ -93,9 +93,9 @@ jobs:
             toolchain: ARM_GNU
           - arch: ia32
             toolchain: ARM_GNU
-          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=0 -DLIBSPDM_FIPS_MODE=0"
+          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=0 -DLIBSPDM_FIPS_MODE=0 -DLIBSPDM_ENABLE_CAPABILITY_CSR_CAP_EX=0"
             toolchain: ARM_GNU
-          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1"
+          - configurations: "-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1 -DLIBSPDM_ENABLE_CAPABILITY_CSR_CAP_EX=1"
             toolchain: ARM_GNU
           - target: Debug
             toolchain: ARM_GNU
@@ -210,7 +210,7 @@ jobs:
           cd build/bin
           ./test_spdm_secured_message
       - name: Test FIPS
-        if: matrix.toolchain != 'LIBFUZZER' && matrix.toolchain != 'ARM_GNU' && matrix.configurations == '-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1' && matrix.configurations != '-DDISABLE_TESTS=1'
+        if: matrix.toolchain != 'LIBFUZZER' && matrix.toolchain != 'ARM_GNU' && matrix.configurations == '-DLIBSPDM_RECORD_TRANSCRIPT_DATA_SUPPORT=1 -DLIBSPDM_FIPS_MODE=1 -DLIBSPDM_ENABLE_CAPABILITY_CSR_CAP_EX=1' && matrix.configurations != '-DDISABLE_TESTS=1'
         run: |
           cd build/bin
           ./test_spdm_fips
