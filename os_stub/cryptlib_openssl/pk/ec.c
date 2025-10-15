@@ -731,9 +731,9 @@ cleanup:
     return result;
 }
 
-#if LIBSPDM_FIPS_MODE
+#if 1
 /*setup random number*/
-static int libspdm_ecdsa_sign_setup_random(EC_KEY *eckey, BIGNUM **kinvp, BIGNUM **rp,
+static int libspdm_ecdsa_sign_setup_random(EVP_PKEY *evp_pkey, BIGNUM **kinvp, BIGNUM **rp,
                                            uint8_t* random, size_t random_len)
 {
     BN_CTX *ctx = NULL;
@@ -744,8 +744,13 @@ static int libspdm_ecdsa_sign_setup_random(EC_KEY *eckey, BIGNUM **kinvp, BIGNUM
     int ret = 0;
     int order_bits;
     const BIGNUM *priv_key;
+    const EC_KEY *eckey;
 
+    if (evp_pkey == NULL) {
+        return 0;
+    }
 
+    eckey = EVP_PKEY_get0_EC_KEY(evp_pkey);
     if (eckey == NULL || (group = EC_KEY_get0_group(eckey)) == NULL) {
         return 0;
     }
@@ -863,8 +868,8 @@ bool libspdm_ecdsa_sign_ex(void *ec_context, size_t hash_nid,
                            uint8_t *signature, size_t *sig_size,
                            int (*random_func)(void *, unsigned char *, size_t))
 {
+    const EC_KEY *ec_key;
     EVP_PKEY *evp_pkey;
-    const EC_KEY *ec_key = NULL;
     ECDSA_SIG *ecdsa_sig;
     int32_t openssl_nid;
     uint8_t half_size;
@@ -893,7 +898,6 @@ bool libspdm_ecdsa_sign_ex(void *ec_context, size_t hash_nid,
     }
 
     evp_pkey = (EVP_PKEY *)ec_context;
-
     ec_key = EVP_PKEY_get0_EC_KEY(evp_pkey);
     openssl_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
     switch (openssl_nid) {
@@ -962,13 +966,13 @@ bool libspdm_ecdsa_sign_ex(void *ec_context, size_t hash_nid,
         result = false;
         goto cleanup;
     }
-    if (!libspdm_ecdsa_sign_setup_random((EC_KEY *)ec_key, &kinv, &rp, random, sizeof(random))) {
+    if (!libspdm_ecdsa_sign_setup_random(evp_pkey, &kinv, &rp, random, sizeof(random))) {
         result = false;
         goto cleanup;
     }
 
     ecdsa_sig = ECDSA_do_sign_ex(message_hash, (uint32_t)hash_size, kinv, rp,
-                                 (EC_KEY *)ec_context);
+                                 (EC_KEY *)ec_key);
     if (ecdsa_sig == NULL) {
         result = false;
         goto cleanup;
