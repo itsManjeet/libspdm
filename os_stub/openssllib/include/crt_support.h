@@ -250,6 +250,8 @@ typedef uint32_t uid_t;
 typedef uint32_t gid_t;
 typedef long off_t;
 
+typedef unsigned int _dev_t;
+
 /* file operations are not required for EFI building,
  * so FILE is mapped to void * to pass build*/
 
