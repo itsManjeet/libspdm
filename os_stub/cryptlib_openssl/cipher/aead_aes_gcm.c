@@ -16,6 +16,25 @@
 #include <openssl/evp.h>
 
 /**
+ * Get AES-GCM cipher name by key size
+ * @param key_size Key size in bytes (16, 24, or 32)
+ * @return Cipher name string or NULL if invalid key size
+ */
+static const char *get_aes_gcm_cipher_name(size_t key_size)
+{
+    switch (key_size) {
+    case 16:
+        return "AES-128-GCM";
+    case 24:
+        return "AES-192-GCM";
+    case 32:
+        return "AES-256-GCM";
+    default:
+        return NULL;
+    }
+}
+
+/**
  * Performs AEAD AES-GCM authenticated encryption on a data buffer and additional authenticated data (AAD).
  *
  * iv_size must be 12, otherwise false is returned.
@@ -47,30 +66,15 @@ bool libspdm_aead_aes_gcm_encrypt(const uint8_t *key, size_t key_size,
                                   uint8_t *data_out, size_t *data_out_size)
 {
     EVP_CIPHER_CTX *ctx;
-    const EVP_CIPHER *cipher;
+    EVP_CIPHER *cipher;
     size_t temp_out_size;
     bool ret_value;
+    const char *cipher_name;
 
-    if (data_in_size > INT_MAX) {
-        return false;
-    }
-    if (a_data_size > INT_MAX) {
+    if (data_in_size > INT_MAX || a_data_size > INT_MAX) {
         return false;
     }
     if (iv_size != 12) {
-        return false;
-    }
-    switch (key_size) {
-    case 16:
-        cipher = EVP_aes_128_gcm();
-        break;
-    case 24:
-        cipher = EVP_aes_192_gcm();
-        break;
-    case 32:
-        cipher = EVP_aes_256_gcm();
-        break;
-    default:
         return false;
     }
     if ((tag_size != 12) && (tag_size != 13) && (tag_size != 14) &&
@@ -78,18 +82,28 @@ bool libspdm_aead_aes_gcm_encrypt(const uint8_t *key, size_t key_size,
         return false;
     }
     if (data_out_size != NULL) {
-        if ((*data_out_size > INT_MAX) ||
-            (*data_out_size < data_in_size)) {
+        if ((*data_out_size > INT_MAX) || (*data_out_size < data_in_size)) {
             return false;
         }
     }
 
-    ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
+    cipher_name = get_aes_gcm_cipher_name(key_size);
+    if (cipher_name == NULL) {
         return false;
     }
 
-    ret_value = (bool)EVP_EncryptInit_ex(ctx, cipher, NULL, NULL, NULL);
+    cipher = EVP_CIPHER_fetch(NULL, cipher_name, NULL);
+    if (cipher == NULL) {
+        return false;
+    }
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        EVP_CIPHER_free(cipher);
+        return false;
+    }
+
+    ret_value = (bool)EVP_EncryptInit_ex2(ctx, cipher, key, iv, NULL);
     if (!ret_value) {
         goto done;
     }
@@ -100,35 +114,29 @@ bool libspdm_aead_aes_gcm_encrypt(const uint8_t *key, size_t key_size,
         goto done;
     }
 
-    ret_value = (bool)EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv);
+    ret_value = (bool)EVP_EncryptUpdate(ctx, NULL, (int32_t *)&temp_out_size,
+                                        a_data, (int32_t)a_data_size);
     if (!ret_value) {
         goto done;
     }
 
-    ret_value = (bool)EVP_EncryptUpdate(
-        ctx, NULL, (int32_t *)&temp_out_size, a_data, (int32_t)a_data_size);
+    ret_value = (bool)EVP_EncryptUpdate(ctx, data_out, (int32_t *)&temp_out_size,
+                                        data_in, (int32_t)data_in_size);
     if (!ret_value) {
         goto done;
     }
 
-    ret_value = (bool)EVP_EncryptUpdate(ctx, data_out,
-                                        (int32_t *)&temp_out_size, data_in,
-                                        (int32_t)data_in_size);
+    ret_value = (bool)EVP_EncryptFinal_ex(ctx, data_out, (int32_t *)&temp_out_size);
     if (!ret_value) {
         goto done;
     }
 
-    ret_value = (bool)EVP_EncryptFinal_ex(ctx, data_out,
-                                          (int32_t *)&temp_out_size);
-    if (!ret_value) {
-        goto done;
-    }
-
-    ret_value = (bool)EVP_CIPHER_CTX_ctrl(
-        ctx, EVP_CTRL_GCM_GET_TAG, (int32_t)tag_size, (void *)tag_out);
+    ret_value = (bool)EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
+                                          (int32_t)tag_size, (void *)tag_out);
 
 done:
     EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_free(cipher);
     if (!ret_value) {
         return ret_value;
     }
@@ -173,30 +181,15 @@ bool libspdm_aead_aes_gcm_decrypt(const uint8_t *key, size_t key_size,
                                   uint8_t *data_out, size_t *data_out_size)
 {
     EVP_CIPHER_CTX *ctx;
-    const EVP_CIPHER *cipher;
+    EVP_CIPHER *cipher;
     size_t temp_out_size;
     bool ret_value;
+    const char *cipher_name;
 
-    if (data_in_size > INT_MAX) {
-        return false;
-    }
-    if (a_data_size > INT_MAX) {
+    if (data_in_size > INT_MAX || a_data_size > INT_MAX) {
         return false;
     }
     if (iv_size != 12) {
-        return false;
-    }
-    switch (key_size) {
-    case 16:
-        cipher = EVP_aes_128_gcm();
-        break;
-    case 24:
-        cipher = EVP_aes_192_gcm();
-        break;
-    case 32:
-        cipher = EVP_aes_256_gcm();
-        break;
-    default:
         return false;
     }
     if ((tag_size != 12) && (tag_size != 13) && (tag_size != 14) &&
@@ -204,18 +197,28 @@ bool libspdm_aead_aes_gcm_decrypt(const uint8_t *key, size_t key_size,
         return false;
     }
     if (data_out_size != NULL) {
-        if ((*data_out_size > INT_MAX) ||
-            (*data_out_size < data_in_size)) {
+        if ((*data_out_size > INT_MAX) || (*data_out_size < data_in_size)) {
             return false;
         }
     }
 
-    ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
+    cipher_name = get_aes_gcm_cipher_name(key_size);
+    if (cipher_name == NULL) {
         return false;
     }
 
-    ret_value = (bool)EVP_DecryptInit_ex(ctx, cipher, NULL, NULL, NULL);
+    cipher = EVP_CIPHER_fetch(NULL, cipher_name, NULL);
+    if (cipher == NULL) {
+        return false;
+    }
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        EVP_CIPHER_free(cipher);
+        return false;
+    }
+
+    ret_value = (bool)EVP_DecryptInit_ex2(ctx, cipher, key, iv, NULL);
     if (!ret_value) {
         goto done;
     }
@@ -226,20 +229,14 @@ bool libspdm_aead_aes_gcm_decrypt(const uint8_t *key, size_t key_size,
         goto done;
     }
 
-    ret_value = (bool)EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv);
+    ret_value = (bool)EVP_DecryptUpdate(ctx, NULL, (int32_t *)&temp_out_size,
+                                        a_data, (int32_t)a_data_size);
     if (!ret_value) {
         goto done;
     }
 
-    ret_value = (bool)EVP_DecryptUpdate(
-        ctx, NULL, (int32_t *)&temp_out_size, a_data, (int32_t)a_data_size);
-    if (!ret_value) {
-        goto done;
-    }
-
-    ret_value = (bool)EVP_DecryptUpdate(ctx, data_out,
-                                        (int32_t *)&temp_out_size, data_in,
-                                        (int32_t)data_in_size);
+    ret_value = (bool)EVP_DecryptUpdate(ctx, data_out, (int32_t *)&temp_out_size,
+                                        data_in, (int32_t)data_in_size);
     if (!ret_value) {
         goto done;
     }
@@ -250,11 +247,11 @@ bool libspdm_aead_aes_gcm_decrypt(const uint8_t *key, size_t key_size,
         goto done;
     }
 
-    ret_value = (bool)EVP_DecryptFinal_ex(ctx, data_out,
-                                          (int32_t *)&temp_out_size);
+    ret_value = (bool)EVP_DecryptFinal_ex(ctx, data_out, (int32_t *)&temp_out_size);
 
 done:
     EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_free(cipher);
     if (!ret_value) {
         return ret_value;
     }

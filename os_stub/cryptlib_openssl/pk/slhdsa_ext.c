@@ -12,8 +12,7 @@
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
-#include <crypto/evp.h>
-#include <crypto/slh_dsa.h>
+#include "pqc_context.h"
 
 #if LIBSPDM_SLH_DSA_SUPPORT
 
@@ -31,15 +30,16 @@ size_t libspdm_slhdsa_type_name_to_nid(const char *type_name);
 bool libspdm_slhdsa_set_privkey(void *dsa_context, const uint8_t *key_data, size_t key_size)
 {
     uint32_t final_pri_key_size;
-    EVP_PKEY *evp_key;
+    libspdm_slhdsa_ctx *ctx;
     EVP_PKEY *new_evp_key;
+    const char *type_name;
 
     if ((dsa_context == NULL) || (key_data == NULL)) {
         return false;
     }
 
-    evp_key = (EVP_PKEY *)dsa_context;
-    switch (libspdm_slhdsa_type_name_to_nid(EVP_PKEY_get0_type_name(evp_key))) {
+    ctx = (libspdm_slhdsa_ctx *)dsa_context;
+    switch (ctx->nid) {
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHA2_128S:
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_128S:
         final_pri_key_size = 64;
@@ -72,18 +72,17 @@ bool libspdm_slhdsa_set_privkey(void *dsa_context, const uint8_t *key_data, size
         return false;
     }
 
-    new_evp_key = EVP_PKEY_new_raw_private_key_ex(NULL, EVP_PKEY_get0_type_name(evp_key), NULL,
+    type_name = libspdm_slhdsa_nid_to_name(ctx->nid);
+    if (type_name == NULL) {
+        return false;
+    }
+    new_evp_key = EVP_PKEY_new_raw_private_key_ex(NULL, type_name, NULL,
                                                   key_data, key_size);
     if (new_evp_key == NULL) {
         return false;
     }
-
-    if (evp_keymgmt_util_copy(evp_key, new_evp_key, OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 1) {
-        EVP_PKEY_free(new_evp_key);
-        return false;
-    }
-
-    EVP_PKEY_free(new_evp_key);
+    EVP_PKEY_free(ctx->pkey);
+    ctx->pkey = new_evp_key;
     return true;
 }
 
@@ -109,7 +108,7 @@ bool libspdm_slhdsa_sign(void *dsa_context,
                          const uint8_t *message, size_t message_size,
                          uint8_t *signature, size_t *sig_size)
 {
-    EVP_PKEY *pkey;
+    libspdm_slhdsa_ctx *ctxobj;
     EVP_MD_CTX *ctx;
     size_t final_sig_size;
     int32_t result;
@@ -123,8 +122,8 @@ bool libspdm_slhdsa_sign(void *dsa_context,
         return false;
     }
 
-    pkey = (EVP_PKEY *)dsa_context;
-    switch (libspdm_slhdsa_type_name_to_nid(EVP_PKEY_get0_type_name(pkey))) {
+    ctxobj = (libspdm_slhdsa_ctx *)dsa_context;
+    switch (ctxobj->nid) {
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHA2_128S:
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_128S:
         final_sig_size = 7856;
@@ -168,9 +167,11 @@ bool libspdm_slhdsa_sign(void *dsa_context,
         return false;
     }
     if (context_size == 0) {
-        result = EVP_DigestSignInit(ctx, NULL, NULL, NULL, pkey);
+        OSSL_PARAM params_default[1];
+        params_default[0] = OSSL_PARAM_construct_end();
+        result = EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, ctxobj->pkey, params_default);
     } else {
-        result = EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, pkey, params);
+        result = EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, ctxobj->pkey, params);
     }
     if (result != 1) {
         EVP_MD_CTX_free(ctx);
@@ -225,7 +226,11 @@ bool libspdm_slhdsa_sign_ex(void *dsa_context,
         return false;
     }
 
-    pkey = (EVP_PKEY *)dsa_context;
+    libspdm_slhdsa_ctx *ctxobj = (libspdm_slhdsa_ctx *)dsa_context;
+    pkey = ctxobj->pkey;
+    if (pkey == NULL) {
+        return false;
+    }
     switch (libspdm_slhdsa_type_name_to_nid(EVP_PKEY_get0_type_name(pkey))) {
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHA2_128S:
     case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_128S:
@@ -279,7 +284,9 @@ bool libspdm_slhdsa_sign_ex(void *dsa_context,
         return false;
     }
     if (context_size == 0) {
-        result = EVP_DigestSignInit(ctx, NULL, NULL, NULL, pkey);
+        OSSL_PARAM params_default[1];
+        params_default[0] = OSSL_PARAM_construct_end();
+        result = EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, pkey, params_default);
     } else {
         result = EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, pkey, params);
     }

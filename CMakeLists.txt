@@ -699,6 +699,11 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
         set(CMAKE_EXE_LINKER_FLAGS "")
 
         set(CMAKE_C_LINK_EXECUTABLE "")
+    elseif(TOOLCHAIN STREQUAL "NONE")
+        # Use native toolchain with group linking for static libraries
+        set(CMAKE_LINKER gcc)
+        set(CMAKE_EXE_LINKER_FLAGS "-no-pie")
+        set(CMAKE_C_LINK_EXECUTABLE "<CMAKE_LINKER> <LINK_FLAGS> <OBJECTS> -o <TARGET> -Wl,--start-group <LINK_LIBRARIES> -Wl,--end-group")
     endif()
 
     if(NOT TOOLCHAIN STREQUAL "NIOS2_GCC")
@@ -1182,17 +1187,12 @@ else()
             )
         elseif(CRYPTO STREQUAL "openssl")
             set(CRYPTO_DEPS "-lssl -lcrypto")
-            if(TOOLCHAIN STREQUAL "NONE")
-                target_link_libraries(${LIB_NAME}_crypto
-                    PUBLIC openssllib
-                    PUBLIC cryptlib_openssl
-                )
-            else()
-                target_link_libraries(${LIB_NAME}_crypto
-                    PUBLIC ssl
-                    PUBLIC crypto
-                )
-            endif()
+            # Always link to the OpenSSL library built from source (openssllib target)
+            # openssllib will be STATIC when TOOLCHAIN=NONE, SHARED otherwise
+            target_link_libraries(${LIB_NAME}_crypto
+                PUBLIC openssllib
+                PUBLIC cryptlib_openssl
+            )
         endif()
 
         target_link_libraries(${LIB_NAME}

@@ -9,6 +9,7 @@
  **/
 
 #include "internal_crypt_lib.h"
+#include "ec_context.h"
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/asn1.h>
@@ -17,7 +18,8 @@
 #include <openssl/bn.h>
 #include <openssl/pem.h>
 #include <openssl/bio.h>
-#include <crypto/evp.h>
+#include <openssl/evp.h>
+#include "rsa_context.h"
 
 #if LIBSPDM_CERT_PARSE_SUPPORT
 
@@ -1544,11 +1546,17 @@ bool libspdm_rsa_get_public_key_from_x509(const uint8_t *cert, size_t cert_size,
     }
 
 
-    /* Duplicate RSA context from the retrieved EVP_PKEY.*/
-
-    if ((*rsa_context = RSAPublicKey_dup(EVP_PKEY_get0_RSA(pkey))) !=
-        NULL) {
-        res = true;
+    /* Wrap EVP_PKEY in internal RSA ctx for unified free path */
+    {
+        libspdm_rsa_ctx_evp_t *ctx;
+        ctx = (libspdm_rsa_ctx_evp_t *)allocate_pool(sizeof(libspdm_rsa_ctx_evp_t));
+        if (ctx != NULL) {
+            libspdm_zero_mem(ctx, sizeof(*ctx));
+            ctx->pkey = pkey;
+            *rsa_context = (void *)ctx;
+            pkey = NULL; /* ownership moved */
+            res = true;
+        }
     }
 
 done:
@@ -1619,7 +1627,23 @@ bool libspdm_ec_get_public_key_from_x509(const uint8_t *cert, size_t cert_size,
         goto done;
     }
 
-    if ((*ec_context = EVP_PKEY_dup(pkey)) != NULL) {
+    /* Allocate wrapper structure */
+    {
+        libspdm_ec_context *ec_ctx;
+        EVP_PKEY *pkey_dup;
+
+        pkey_dup = EVP_PKEY_dup(pkey);
+        if (pkey_dup == NULL) {
+            goto done;
+        }
+
+        ec_ctx = (libspdm_ec_context *)malloc(sizeof(libspdm_ec_context));
+        if (ec_ctx == NULL) {
+            EVP_PKEY_free(pkey_dup);
+            goto done;
+        }
+        ec_ctx->evp_pkey = pkey_dup;
+        *ec_context = ec_ctx;
         res = true;
     }
 
@@ -1692,10 +1716,18 @@ bool libspdm_ecd_get_public_key_from_x509(const uint8_t *cert, size_t cert_size,
     }
     type = EVP_PKEY_id(pkey);
     if ((type != EVP_PKEY_ED25519) && (type != EVP_PKEY_ED448)) {
+        EVP_PKEY_free(pkey);
         goto done;
     }
 
-    *ecd_context = pkey;
+    /* Create double pointer structure for EdDSA context (compatible with libspdm_ecd_new_by_nid) */
+    EVP_PKEY **ecd_context_ptr = malloc(sizeof(EVP_PKEY *));
+    if (ecd_context_ptr == NULL) {
+        EVP_PKEY_free(pkey);
+        goto done;
+    }
+    *ecd_context_ptr = pkey;
+    *ecd_context = ecd_context_ptr;
     res = true;
 
 done:
@@ -1763,11 +1795,22 @@ bool libspdm_sm2_get_public_key_from_x509(const uint8_t *cert, size_t cert_size,
 
     result = EVP_PKEY_is_a(pkey,"SM2");
     if (result == 0) {
+        EVP_PKEY_free(pkey);
         goto done;
     }
 
-    *sm2_context = pkey;
-    res = true;
+    /* Allocate wrapper structure */
+    {
+        libspdm_ec_context *sm2_ctx = (libspdm_ec_context *)malloc(sizeof(libspdm_ec_context));
+        if (sm2_ctx == NULL) {
+            EVP_PKEY_free(pkey);
+            goto done;
+        }
+        sm2_ctx->evp_pkey = pkey;
+        *sm2_context = sm2_ctx;
+        pkey = NULL; /* ownership moved to sm2_ctx */
+        res = true;
+    }
 
 done:
 
@@ -1775,6 +1818,10 @@ done:
 
     if (x509_cert != NULL) {
         X509_free(x509_cert);
+    }
+
+    if (pkey != NULL) {
+        EVP_PKEY_free(pkey);
     }
 
     return res;
@@ -1817,20 +1864,6 @@ bool libspdm_x509_verify_cert(const uint8_t *cert, size_t cert_size,
     x509_ca_cert = NULL;
     cert_store = NULL;
     cert_ctx = NULL;
-
-
-    /* Register & Initialize necessary digest algorithms for certificate verification.*/
-
-    if (EVP_add_digest(EVP_sha256()) == 0) {
-        goto done;
-    }
-    if (EVP_add_digest(EVP_sha384()) == 0) {
-        goto done;
-    }
-    if (EVP_add_digest(EVP_sha512()) == 0) {
-        goto done;
-    }
-
 
     /* Read DER-encoded certificate to be verified and Construct X509 object.*/
 
@@ -2503,8 +2536,7 @@ bool libspdm_gen_x509_csr_with_pqc(
     X509_NAME *x509_name;
     EVP_PKEY *private_key;
     EVP_PKEY *public_key;
-    RSA *rsa_public_key;
-    const EVP_MD *md;
+    EVP_MD *md;
     uint8_t *csr_p;
     STACK_OF(X509_EXTENSION) *exts;
     X509_EXTENSION *basic_constraints_ext;
@@ -2519,7 +2551,6 @@ bool libspdm_gen_x509_csr_with_pqc(
     x509_name = NULL;
     private_key = NULL;
     public_key = NULL;
-    rsa_public_key = NULL;
     md = NULL;
     csr_p = csr_pointer;
     num_exts = 0;
@@ -2550,31 +2581,81 @@ bool libspdm_gen_x509_csr_with_pqc(
         case LIBSPDM_CRYPTO_NID_RSASSA3072:
         case LIBSPDM_CRYPTO_NID_RSAPSS3072:
         case LIBSPDM_CRYPTO_NID_RSASSA4096:
-        case LIBSPDM_CRYPTO_NID_RSAPSS4096:
-            ret = EVP_PKEY_set1_RSA(private_key, (RSA *)context);
-            if (ret != 1) {
+        case LIBSPDM_CRYPTO_NID_RSAPSS4096: {
+            /* Context is our internal RSA ctx holding EVP_PKEY */
+            libspdm_rsa_ctx_evp_t *rsa_ctx = (libspdm_rsa_ctx_evp_t *)context;
+            if (rsa_ctx == NULL || rsa_ctx->pkey == NULL) {
+                goto free_all;
+            }
+            EVP_PKEY_free(private_key);
+            EVP_PKEY_free(public_key);
+            private_key = EVP_PKEY_dup(rsa_ctx->pkey);
+            public_key = EVP_PKEY_dup(rsa_ctx->pkey);
+            if (private_key == NULL || public_key == NULL) {
+                goto free_all;
+            }
+            break;
+        }
+        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P256:
+        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P384:
+        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P521: {
+            /* EC context is libspdm_ec_context wrapper */
+            libspdm_ec_context *ec_ctx = (libspdm_ec_context *)context;
+            EVP_PKEY *ec_pkey;
+
+            if (ec_ctx == NULL) {
+                goto free_all;
+            }
+            ec_pkey = ec_ctx->evp_pkey;
+            if (ec_pkey == NULL) {
                 goto free_all;
             }
 
-            rsa_public_key = RSAPublicKey_dup((RSA *)context);
-            EVP_PKEY_assign_RSA(public_key, rsa_public_key);
-            break;
-        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P256:
-        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P384:
-        case LIBSPDM_CRYPTO_NID_ECDSA_NIST_P521:
             EVP_PKEY_free(private_key);
             EVP_PKEY_free(public_key);
 
-            private_key = EVP_PKEY_dup((EVP_PKEY *) context);
-            public_key = EVP_PKEY_dup((EVP_PKEY *) context);
+            private_key = EVP_PKEY_dup(ec_pkey);
+            public_key = EVP_PKEY_dup(ec_pkey);
+            if (private_key == NULL || public_key == NULL) {
+                goto free_all;
+            }
             break;
-        case LIBSPDM_CRYPTO_NID_SM2_DSA_P256:
+        }
+        case LIBSPDM_CRYPTO_NID_SM2_DSA_P256: {
+            libspdm_ec_context *sm2_ctx = (libspdm_ec_context *)context;
+            EVP_PKEY *sm2_pkey;
+
+            if (sm2_ctx == NULL) {
+                goto free_all;
+            }
+            sm2_pkey = sm2_ctx->evp_pkey;
+            if (sm2_pkey == NULL) {
+                goto free_all;
+            }
+
+            EVP_PKEY_free(private_key);
+            EVP_PKEY_free(public_key);
+            private_key = EVP_PKEY_dup(sm2_pkey);
+            public_key = EVP_PKEY_dup(sm2_pkey);
+            if (private_key == NULL || public_key == NULL) {
+                goto free_all;
+            }
+            hash_nid = LIBSPDM_CRYPTO_NID_NULL;
+            break;
+        }
         case LIBSPDM_CRYPTO_NID_EDDSA_ED25519:
         case LIBSPDM_CRYPTO_NID_EDDSA_ED448:
             EVP_PKEY_free(private_key);
             EVP_PKEY_free(public_key);
-            private_key = EVP_PKEY_dup((EVP_PKEY *)context);
-            public_key = EVP_PKEY_dup((EVP_PKEY *)context);
+            /* EdDSA context is EVP_PKEY ** (double pointer) */
+            if (context == NULL || *(EVP_PKEY **)context == NULL) {
+                goto free_all;
+            }
+            private_key = EVP_PKEY_dup(*(EVP_PKEY **)context);
+            public_key = EVP_PKEY_dup(*(EVP_PKEY **)context);
+            if (private_key == NULL || public_key == NULL) {
+                goto free_all;
+            }
             hash_nid = LIBSPDM_CRYPTO_NID_NULL;
             break;
         default:
@@ -2598,14 +2679,25 @@ bool libspdm_gen_x509_csr_with_pqc(
         case LIBSPDM_CRYPTO_NID_SLH_DSA_SHA2_256S:
         case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_256S:
         case LIBSPDM_CRYPTO_NID_SLH_DSA_SHA2_256F:
-        case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_256F:
-            if (evp_keymgmt_util_copy(private_key, context, OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 1) {
+        case LIBSPDM_CRYPTO_NID_SLH_DSA_SHAKE_256F: {
+            /* Context is internal ctx holding EVP_PKEY (libspdm_mldsa_ctx or libspdm_slhdsa_ctx) */
+            typedef struct {
+                EVP_PKEY *pkey;
+                size_t nid;
+            } libspdm_pqc_ctx;
+            libspdm_pqc_ctx *pqc_ctx = (libspdm_pqc_ctx *)context;
+            if (pqc_ctx == NULL || pqc_ctx->pkey == NULL) {
                 goto free_all;
             }
-            if (evp_keymgmt_util_copy(public_key, context, OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 1) {
+            EVP_PKEY_free(private_key);
+            EVP_PKEY_free(public_key);
+            private_key = EVP_PKEY_dup(pqc_ctx->pkey);
+            public_key = EVP_PKEY_dup(pqc_ctx->pkey);
+            if (private_key == NULL || public_key == NULL) {
                 goto free_all;
             }
             break;
+        }
         default:
             goto free_all;
         }
@@ -2653,27 +2745,32 @@ bool libspdm_gen_x509_csr_with_pqc(
         md = NULL;
         break;
     case LIBSPDM_CRYPTO_NID_SHA256:
-        md = EVP_sha256();
+        md = EVP_MD_fetch(NULL, "SHA256", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SHA384:
-        md = EVP_sha384();
+        md = EVP_MD_fetch(NULL, "SHA384", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SHA512:
-        md = EVP_sha512();
+        md = EVP_MD_fetch(NULL, "SHA512", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SHA3_256:
-        md = EVP_sha3_256();
+        md = EVP_MD_fetch(NULL, "SHA3-256", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SHA3_384:
-        md = EVP_sha3_384();
+        md = EVP_MD_fetch(NULL, "SHA3-384", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SHA3_512:
-        md = EVP_sha3_512();
+        md = EVP_MD_fetch(NULL, "SHA3-512", NULL);
         break;
     case LIBSPDM_CRYPTO_NID_SM3_256:
-        md = EVP_sm3();
+        md = EVP_MD_fetch(NULL, "SM3", NULL);
         break;
     default:
+        ret = 0;
+        goto free_all;
+    }
+
+    if (md == NULL && hash_nid != LIBSPDM_CRYPTO_NID_NULL) {
         ret = 0;
         goto free_all;
     }
@@ -2725,7 +2822,7 @@ bool libspdm_gen_x509_csr_with_pqc(
     if (pqc_asym_nid != 0) {
         ret = X509_REQ_sign(x509_req, private_key, NULL);
     } else {
-        ret = X509_REQ_sign(x509_req, private_key, md);
+        ret = X509_REQ_sign(x509_req, private_key, (const EVP_MD *)md);
     }
     if (ret <= 0) {
         ret = 0;
@@ -2744,6 +2841,9 @@ bool libspdm_gen_x509_csr_with_pqc(
 
     /*free*/
 free_all:
+    if (md != NULL) {
+        EVP_MD_free((EVP_MD *)md);
+    }
     X509_REQ_free(x509_req);
     EVP_PKEY_free(private_key);
     EVP_PKEY_free(public_key);

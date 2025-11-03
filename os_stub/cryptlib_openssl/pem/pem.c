@@ -9,8 +9,12 @@
  **/
 
 #include "internal_crypt_lib.h"
+#include "ec_context.h"
 #include <openssl/pem.h>
 #include <openssl/evp.h>
+#include <openssl/core_names.h>
+#include <string.h>
+#include "rsa_context.h"
 
 static size_t ascii_str_len(const char *string)
 {
@@ -81,29 +85,14 @@ bool libspdm_rsa_get_private_key_from_pem(const uint8_t *pem_data,
 {
     bool status;
     BIO *pem_bio;
-
-    /* Check input parameters.*/
+    EVP_PKEY *pkey;
 
     if (pem_data == NULL || rsa_context == NULL || pem_size > INT_MAX) {
         return false;
     }
 
-    /* Add possible block-cipher descriptor for PEM data decryption.
-     * NOTE: Only support most popular ciphers AES for the encrypted PEM.*/
-
-    if (EVP_add_cipher(EVP_aes_128_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_192_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_256_cbc()) == 0) {
-        return false;
-    }
-
     status = false;
-
-    /* Read encrypted PEM data.*/
+    pkey = NULL;
 
     pem_bio = BIO_new(BIO_s_mem());
     if (pem_bio == NULL) {
@@ -114,22 +103,34 @@ bool libspdm_rsa_get_private_key_from_pem(const uint8_t *pem_data,
         goto done;
     }
 
-    /* Retrieve RSA Private key from encrypted PEM data.*/
-
-    *rsa_context =
-        PEM_read_bio_RSAPrivateKey(pem_bio, NULL,
+    pkey = PEM_read_bio_PrivateKey(pem_bio, NULL,
                                    (pem_password_cb *)&PasswordCallback,
                                    (void *)password);
-    if (*rsa_context != NULL) {
+    if (pkey == NULL) {
+        goto done;
+    }
+    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_RSA) {
+        goto done;
+    }
+
+    {
+        libspdm_rsa_ctx_evp_t *ctx;
+        ctx = (libspdm_rsa_ctx_evp_t *)allocate_pool(sizeof(libspdm_rsa_ctx_evp_t));
+        if (ctx == NULL) {
+            goto done;
+        }
+        libspdm_zero_mem(ctx, sizeof(*ctx));
+        ctx->pkey = pkey;
+        *rsa_context = (void *)ctx;
         status = true;
+        pkey = NULL; /* ownership moved to ctx */
     }
 
 done:
-
-    /* Release Resources.*/
-
     BIO_free(pem_bio);
-
+    if (!status && pkey != NULL) {
+        EVP_PKEY_free(pkey);
+    }
     return status;
 }
 #endif /* (LIBSPDM_RSA_SSA_SUPPORT) || (LIBSPDM_RSA_PSS_SUPPORT) */
@@ -164,19 +165,6 @@ bool libspdm_ec_get_private_key_from_pem(const uint8_t *pem_data, size_t pem_siz
         return false;
     }
 
-    /* Add possible block-cipher descriptor for PEM data decryption.
-     * NOTE: Only support most popular ciphers AES for the encrypted PEM.*/
-
-    if (EVP_add_cipher(EVP_aes_128_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_192_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_256_cbc()) == 0) {
-        return false;
-    }
-
     status = false;
 
     /* Read encrypted PEM data.*/
@@ -192,19 +180,31 @@ bool libspdm_ec_get_private_key_from_pem(const uint8_t *pem_data, size_t pem_siz
 
 
     /* Retrieve EC Private key from encrypted PEM data.*/
+    {
+        EVP_PKEY *pkey;
+        libspdm_ec_context *ec_ctx;
 
-    *ec_context =
-        PEM_read_bio_PrivateKey(pem_bio, NULL,
-                                (pem_password_cb *)&PasswordCallback,
-                                (void *)password);
-    if (*ec_context != NULL) {
+        pkey = PEM_read_bio_PrivateKey(pem_bio, NULL,
+                                       (pem_password_cb *)&PasswordCallback,
+                                       (void *)password);
+        if (pkey == NULL) {
+            goto done;
+        }
+
+        if (EVP_PKEY_get_base_id(pkey) != EVP_PKEY_EC) {
+            EVP_PKEY_free(pkey);
+            goto done;
+        }
+
+        /* Allocate wrapper structure */
+        ec_ctx = (libspdm_ec_context *)malloc(sizeof(libspdm_ec_context));
+        if (ec_ctx == NULL) {
+            EVP_PKEY_free(pkey);
+            goto done;
+        }
+        ec_ctx->evp_pkey = pkey;
+        *ec_context = ec_ctx;
         status = true;
-    }
-
-    if (EVP_PKEY_get_base_id((EVP_PKEY *) *ec_context) != EVP_PKEY_EC) {
-        EVP_PKEY_free((EVP_PKEY *) *ec_context);
-        *ec_context = NULL;
-        status = false;
     }
 
 done:
@@ -249,19 +249,6 @@ bool libspdm_ecd_get_private_key_from_pem(const uint8_t *pem_data,
         return false;
     }
 
-    /* Add possible block-cipher descriptor for PEM data decryption.
-     * NOTE: Only support most popular ciphers AES for the encrypted PEM.*/
-
-    if (EVP_add_cipher(EVP_aes_128_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_192_cbc()) == 0) {
-        return false;
-    }
-    if (EVP_add_cipher(EVP_aes_256_cbc()) == 0) {
-        return false;
-    }
-
     status = false;
 
     /* Read encrypted PEM data.*/
@@ -286,9 +273,18 @@ bool libspdm_ecd_get_private_key_from_pem(const uint8_t *pem_data,
     }
     type = EVP_PKEY_id(pkey);
     if ((type != EVP_PKEY_ED25519) && (type != EVP_PKEY_ED448)) {
+        EVP_PKEY_free(pkey);
         goto done;
     }
-    *ecd_context = pkey;
+
+    /* Create double pointer structure for EdDSA context (compatible with libspdm_ecd_new_by_nid) */
+    EVP_PKEY **ecd_context_ptr = malloc(sizeof(EVP_PKEY *));
+    if (ecd_context_ptr == NULL) {
+        EVP_PKEY_free(pkey);
+        goto done;
+    }
+    *ecd_context_ptr = pkey;
+    *ecd_context = ecd_context_ptr;
     status = true;
 
 done:
@@ -325,26 +321,19 @@ bool libspdm_sm2_get_private_key_from_pem(const uint8_t *pem_data,
     bool status;
     BIO *pem_bio;
     EVP_PKEY *pkey;
-    EC_KEY *ec_key;
+    char curve_name[64] = {0};
+    size_t curve_name_len = sizeof(curve_name);
     int32_t openssl_nid;
 
     /* Check input parameters.*/
-
     if (pem_data == NULL || sm2_context == NULL || pem_size > INT_MAX) {
         return false;
     }
 
-    /* Add possible block-cipher descriptor for PEM data decryption.
-     * NOTE: Only support SM4 for the encrypted PEM.*/
-
-    /*if (EVP_add_cipher (EVP_sm4_cbc ()) == 0) {
-     *  return false;
-     *}*/
-
     status = false;
+    pkey = NULL;
 
     /* Read encrypted PEM data.*/
-
     pem_bio = BIO_new(BIO_s_mem());
     if (pem_bio == NULL) {
         return status;
@@ -354,28 +343,48 @@ bool libspdm_sm2_get_private_key_from_pem(const uint8_t *pem_data,
         goto done;
     }
 
-    /* Retrieve sm2 Private key from encrypted PEM data.*/
-
+    /* Retrieve SM2 Private key from encrypted PEM data.*/
     pkey = PEM_read_bio_PrivateKey(pem_bio, NULL,
                                    (pem_password_cb *)&PasswordCallback,
                                    (void *)password);
     if (pkey == NULL) {
         goto done;
     }
-    ec_key = (void *)EVP_PKEY_get0_EC_KEY(pkey);
-    openssl_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
+
+    /* Use modern parameter interface instead of EVP_PKEY_get0_EC_KEY
+     * Get curve name*/
+    if (EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_GROUP_NAME,
+                                       curve_name, sizeof(curve_name),
+                                       &curve_name_len) <= 0) {
+        goto done;
+    }
+
+    /* Convert curve name to NID */
+    openssl_nid = OBJ_sn2nid(curve_name);
     if (openssl_nid != NID_sm2) {
         goto done;
     }
 
-    *sm2_context = pkey;
-    status = true;
+    /* Allocate wrapper structure */
+    {
+        libspdm_ec_context *sm2_ctx = (libspdm_ec_context *)malloc(sizeof(libspdm_ec_context));
+        if (sm2_ctx == NULL) {
+            goto done;
+        }
+        sm2_ctx->evp_pkey = pkey;
+        *sm2_context = sm2_ctx;
+        pkey = NULL; /* ownership moved to sm2_ctx */
+        status = true;
+    }
 
 done:
-
     /* Release Resources.*/
-
     BIO_free(pem_bio);
+
+    /* Free pkey if failed */
+    if (!status && pkey != NULL) {
+        EVP_PKEY_free(pkey);
+    }
 
     return status;
 }
