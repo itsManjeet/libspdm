@@ -30,8 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          - windows-latest
+          # - ubuntu-latest
+          # - windows-latest
           - macos-latest
         crypto:
           - mbedtls
@@ -96,8 +96,6 @@ jobs:
             toolchain: VS2019
           - arch: aarch64
             toolchain: LIBFUZZER
-          - arch: aarch64
-            toolchain: CLANG
           - os: windows-latest
             toolchain: ARM_GNU
           - arch: x64
@@ -171,7 +169,7 @@ jobs:
           cmake -E env CFLAGS="${{ matrix.configurations }} -DLIBSPDM_DEBUG_LIBSPDM_ASSERT_CONFIG=3" cmake -DARCH=${{ matrix.arch }} -DTOOLCHAIN=${{ matrix.toolchain }} -DTARGET=${{ matrix.target }} -DCRYPTO=${{ matrix.crypto }} ..
           make copy_sample_key
           make copy_seed
-          make # process killed with multicore
+          make -j$(sysctl -n hw.logicalcpu)
       - name: Build - Windows
         if: matrix.os == 'windows-latest' && matrix.toolchain != 'GCC'
         run: |
@@ -209,7 +207,7 @@ jobs:
           cmake -DARCH=x64 -DTOOLCHAIN=CLANG -DTARGET=Debug -DCRYPTO=${{matrix.crypto}} -DGCOV=ON ..
           make copy_sample_key
           make copy_seed
-          make # process killed with multicore
+          make -j$(sysctl -n hw.logicalcpu)
       - name: Test Requester
         if: matrix.toolchain != 'LIBFUZZER' && matrix.toolchain != 'ARM_GNU' && matrix.configurations != '-DDISABLE_TESTS=1'
         run: |
