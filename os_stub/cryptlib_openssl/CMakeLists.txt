@@ -48,6 +48,7 @@ target_sources(cryptlib_openssl
         pk/x509_pqc.c
         rand/rand.c
         sys_call/crt_wrapper_host.c
+        tpm/tpm.c
 )
 
 target_compile_options(cryptlib_openssl PRIVATE ${OPENSSL_FLAGS})
@@ -68,4 +69,8 @@ elseif(ARCH STREQUAL "loongarch64")
     target_compile_options(cryptlib_openssl PRIVATE -DLIBSPDM_CPU_LOONGARCH64)
 else()
     message(FATAL_ERROR "Unknown ARCH")
+endif()
+
+if (${DEVICE} STREQUAL "tpm")
+  target_link_libraries(cryptlib_openssl PUBLIC tss2-esys tss2-tctildr tss2-rc)
 endif()
