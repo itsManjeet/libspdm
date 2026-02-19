@@ -191,7 +191,7 @@ bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
     char curve_name[64];
     size_t curve_name_len = 0;
 
-    if (ec_context == NULL || public_key == NULL) {
+    if (ec_context == NULL || public_key == NULL || public_key_size + 1 > sizeof(oct_key)) {
         return false;
     }
     evp_pkey = ((libspdm_key_context *)ec_context)->evp_pkey;
@@ -208,13 +208,7 @@ bool libspdm_ec_set_pub_key(void *ec_context, const uint8_t *public_key,
         return false;
     }
 
-    /* Build uncompressed octet: 0x04 || X || Y */
-    if (public_key_size + 1 > sizeof(oct_key)) {
-        return false;
-    }
-    oct_key[0] = 0x04;
-    memcpy(oct_key + 1, public_key, public_key_size);
-    oct_len = public_key_size + 1;
+    get_evp_compatible_public_key(evp_pkey, public_key, public_key_size, oct_key, &oct_len);
 
     if (EVP_PKEY_set1_encoded_public_key(evp_pkey, oct_key, oct_len) > 0) {
         pctx = EVP_PKEY_CTX_new_from_pkey(NULL, evp_pkey, NULL);
@@ -1390,16 +1384,16 @@ EVP_PKEY *import_peer_pubkey(const char* curve_name, const unsigned char *pub, s
 void get_evp_compatible_public_key(EVP_PKEY *evp_pkey,
                                    const uint8_t *public_key, size_t public_key_size,
                                    uint8_t *compatible_key, size_t *comptable_key_size) {
-    int half_size;
+    size_t half_size;
     /* EVP compatible public key hack
-     * EVP expect public key [0] = 0x04 for uncompressed followed by key data */
+     * EVP expect public key [0] = 0x04 for uncompressed flag followed by key data */
     half_size = evp_pkey_get_half_size(evp_pkey);
     if (half_size * 2 == public_key_size) {
-        public_key_size += 1;
         compatible_key[0] = 0x04;
-        memcpy(compatible_key+1, public_key, public_key_size-1);
+        memcpy(compatible_key + 1, public_key, public_key_size);
+        *comptable_key_size = 1 + public_key_size;
     } else {
         memcpy(compatible_key, public_key, public_key_size);
+        *comptable_key_size = public_key_size;
     }
-    *comptable_key_size = public_key_size;
 }
