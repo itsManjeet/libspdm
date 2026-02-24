@@ -179,6 +179,7 @@ cleanup_tcti:
     Tss2_TctiLdr_Finalize(&tcti_context);
 
 finish:
+    fprintf(stderr, "Result: %s\n", Tss2_RC_Decode(result));
     return result == TSS2_RC_SUCCESS;
 }
 
