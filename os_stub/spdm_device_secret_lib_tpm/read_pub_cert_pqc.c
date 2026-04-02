@@ -17,7 +17,7 @@
 #include "library/debuglib.h"
 #include "library/memlib.h"
 #include "spdm_crypt_ext_lib/spdm_crypt_ext_lib.h"
-#include "spdm_device_secret_lib_internal.h"
+#include "internal/libspdm_device_secret_lib.h"
 #include <base.h>
 
 bool libspdm_read_pqc_responder_root_public_certificate(

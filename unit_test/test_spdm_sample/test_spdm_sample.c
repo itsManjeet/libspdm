@@ -8,7 +8,7 @@
 
 #include "spdm_unit_test.h"
 #include "library/spdm_common_lib.h"
-#include "spdm_crypt_ext_lib/spdm_crypt_ext_lib.h"
+#include "library/spdm_crypt_lib_ext.h"
 #include "spdm_cert_verify_callback_sample/spdm_cert_verify_callback_internal.h"
 
 /*read cert chain or root cert with dice extension*/
