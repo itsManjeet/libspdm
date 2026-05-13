@@ -40,6 +40,20 @@ set(DEVICE ${DEVICE} CACHE STRING "Choose the test device: sample tpm, and defau
 
 option(LIBSPDM_TPM_SUPPORT "Add TPM support in crypt_ext" OFF)
 
+# TPM Handle Configuration Options (slot-based configuration)
+# Root and leaf certificates are extracted from certificate chains
+# Requester handles
+set(LIBSPDM_TPM_HANDLE_REQUESTER_HANDLE_SLOT_0 "handle:0x81000011" CACHE STRING "TPM Requester Handle String Slot 0")
+set(LIBSPDM_TPM_HANDLE_REQUESTER_CERTCHAIN_SLOT_0 "0x1500011" CACHE STRING "TPM Requester Certificate Chain NV Index Slot 0")
+set(LIBSPDM_TPM_HANDLE_REQUESTER_HANDLE_SLOT_1 "handle:0x81000012" CACHE STRING "TPM Requester Handle String Slot 1")
+set(LIBSPDM_TPM_HANDLE_REQUESTER_CERTCHAIN_SLOT_1 "0x1500012" CACHE STRING "TPM Requester Certificate Chain NV Index Slot 1")
+
+# Responder handles
+set(LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_0 "handle:0x81000021" CACHE STRING "TPM Responder Handle String Slot 0")
+set(LIBSPDM_TPM_HANDLE_RESPONDER_CERTCHAIN_SLOT_0 "0x1500021" CACHE STRING "TPM Responder Certificate Chain NV Index Slot 0")
+set(LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_1 "handle:0x81000022" CACHE STRING "TPM Responder Handle String Slot 1")
+set(LIBSPDM_TPM_HANDLE_RESPONDER_CERTCHAIN_SLOT_1 "0x1500031" CACHE STRING "TPM Responder Certificate Chain NV Index Slot 1")
+
 if(NOT GCOV)
     set(GCOV "OFF")
 endif()

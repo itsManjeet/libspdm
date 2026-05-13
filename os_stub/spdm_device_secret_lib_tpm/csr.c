@@ -117,17 +117,27 @@ bool libspdm_gen_csr_without_reset(uint32_t base_hash_algo, uint32_t base_asym_a
 
     void *cert;
     void *x509_ca_cert;
+    size_t x509_ca_cert_len;
+    int8_t cert_count;
     size_t cert_size;
 
-    if (!libspdm_tpm_get_pvt_key_handle(TPM_RESP_HANDLE, &context)) {
+    if (!libspdm_tpm_get_pvt_key_handle(LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_0, &context)) {
         return false;
     }
 
-    if (!libspdm_tpm_read_nv(TPM_RESP_CERT, &cert, &cert_size)) {
+    if (!libspdm_tpm_read_nv(LIBSPDM_TPM_HANDLE_RESPONDER_CERTCHAIN_SLOT_1, &cert, &cert_size)) {
         return false;
     }
 
-    if (!libspdm_x509_construct_certificate(cert, cert_size, (uint8_t**)&x509_ca_cert)) {
+    cert_count = libspdm_x509_get_cert_from_cert_chain(cert, cert_size, -1, NULL, NULL);
+    if (cert_count <= 0) {
+        free(cert);
+        return false;
+    }
+
+    if (!libspdm_x509_get_cert_from_cert_chain(cert, cert_size, cert_count-1, (const uint8_t**) &x509_ca_cert,
+                                               &x509_ca_cert_len)) {
+        free(cert);
         return false;
     }
 
