@@ -13,6 +13,8 @@
 #include "hal/library/responder/measlib.h"
 #include "industry_standard/spdm_secured_message.h"
 #include "keys.h"
+#include "meas_impl.h"
+#include "meas_data.h"
 
 extern size_t libspdm_secret_lib_meas_opaque_data_size;
 
@@ -179,6 +181,114 @@ static void test_spdm_tpm_meas_validation(void **state)
     block_size = libspdm_fill_measurement_image_hash_block(
         false, SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256, 0, &block);
     assert_int_equal(block_size, 0);
+}
+
+static void test_spdm_tpm_mel_uses_configured_measurements(void **state)
+{
+    void *mel;
+    size_t mel_size;
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log;
+    spdm_mel_entry_dmtf_t *mel_entry;
+    uint32_t index;
+    bool status;
+    bool has_svn;
+    bool has_manifest;
+    bool has_device_mode;
+
+    mel = NULL;
+    mel_size = 0;
+    has_svn = false;
+    has_manifest = false;
+    has_device_mode = false;
+
+    status = libspdm_measurement_extension_log_collection(
+        NULL,
+        SPDM_MEL_SPECIFICATION_DMTF,
+        SPDM_MEASUREMENT_SPECIFICATION_DMTF,
+        SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_RAW_BIT_STREAM_ONLY,
+        &mel,
+        &mel_size);
+    assert_true(status);
+    assert_non_null(mel);
+    assert_true(mel_size >= sizeof(spdm_measurement_extension_log_dmtf_t));
+
+    measurement_extension_log = (spdm_measurement_extension_log_dmtf_t *)mel;
+    assert_int_equal(mel_size,
+                     sizeof(spdm_measurement_extension_log_dmtf_t) +
+                     measurement_extension_log->mel_entries_len);
+
+    mel_entry = (spdm_mel_entry_dmtf_t *)((uint8_t *)measurement_extension_log +
+                                          sizeof(spdm_measurement_extension_log_dmtf_t));
+    for (index = 0; index < measurement_extension_log->number_of_entries; index++) {
+        uint8_t measurement_type;
+
+        measurement_type =
+            mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_type &
+            SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_MASK;
+
+        assert_int_not_equal(measurement_type,
+                             SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_INFORMATIONAL);
+        assert_int_not_equal(measurement_type,
+                             SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_VERSION);
+        assert_int_not_equal(mel_entry->meas_index, LIBSPDM_MEASUREMENT_INDEX_HEM);
+
+        if (mel_entry->meas_index == LIBSPDM_MEASUREMENT_INDEX_SVN) {
+            assert_int_equal(measurement_type,
+                             SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_SECURE_VERSION_NUMBER);
+            has_svn = true;
+        } else if (mel_entry->meas_index ==
+                   SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_MEASUREMENT_MANIFEST) {
+            const libspdm_tpm_measurement_manifest_header_t *manifest_header;
+            const libspdm_tpm_measurement_manifest_entry_t *manifest_entry;
+
+            assert_int_equal(measurement_type,
+                             SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_MEASUREMENT_MANIFEST);
+            assert_int_equal(
+                mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size,
+                sizeof(libspdm_tpm_measurement_manifest_t));
+
+            manifest_header = (const libspdm_tpm_measurement_manifest_header_t *)(mel_entry + 1);
+            assert_int_equal(manifest_header->version, 1);
+            assert_int_equal(manifest_header->size, sizeof(libspdm_tpm_measurement_manifest_t));
+            assert_int_equal(manifest_header->vendor_id, 0);
+            assert_int_equal(manifest_header->measurement_count,
+                             LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER);
+            assert_int_equal(manifest_header->flags, 0);
+            assert_int_equal(manifest_header->reserved, 0);
+
+            manifest_entry =
+                (const libspdm_tpm_measurement_manifest_entry_t *)(manifest_header + 1);
+            assert_int_equal(manifest_entry[0].index, 0x1);
+            assert_int_equal(manifest_entry[0].kind, LIBSPDM_TPM_MEASUREMENT_KIND_PCR);
+            has_manifest = true;
+        } else if (mel_entry->meas_index ==
+                   SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_DEVICE_MODE) {
+            const spdm_measurements_device_mode_t *device_mode;
+
+            assert_int_equal(measurement_type,
+                             SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_DEVICE_MODE);
+            assert_int_equal(
+                mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size,
+                sizeof(spdm_measurements_device_mode_t));
+
+            device_mode = (const spdm_measurements_device_mode_t *)(mel_entry + 1);
+            assert_int_equal(device_mode->operational_mode_capabilities,
+                             SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE);
+            assert_int_equal(device_mode->operational_mode_state,
+                             SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE);
+            assert_int_equal(device_mode->device_mode_capabilities, 0);
+            assert_int_equal(device_mode->device_mode_state, 0);
+            has_device_mode = true;
+        }
+
+        mel_entry = (spdm_mel_entry_dmtf_t *)
+                    ((uint8_t *)mel_entry + sizeof(spdm_mel_entry_dmtf_t) +
+                     mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size);
+    }
+
+    assert_true(has_svn);
+    assert_true(has_manifest);
+    assert_true(has_device_mode);
 }
 
 static void test_spdm_tpm_cert_slot_validation(void **state)
@@ -549,6 +659,7 @@ static int libspdm_spdm_tpm_test_main(void)
         cmocka_unit_test(test_tpm_read_nv_validation),
         cmocka_unit_test(test_spdm_tpm_security_stubs),
         cmocka_unit_test(test_spdm_tpm_meas_validation),
+        cmocka_unit_test(test_spdm_tpm_mel_uses_configured_measurements),
         cmocka_unit_test(test_spdm_tpm_cert_slot_validation),
         cmocka_unit_test(test_spdm_tpm_quote_validation),
 

@@ -1,0 +1,36 @@
+/**
+ *  Copyright Notice:
+ *  Copyright 2026 DMTF. All rights reserved.
+ *  License: BSD 3-Clause License. For full text see link: https://github.com/DMTF/libspdm/blob/main/LICENSE.md
+ **/
+
+#pragma once
+
+/* Auto-generated TPM measurement data */
+
+#define LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER @MEASUREMENT_COUNT@
+#define LIBSPDM_TPM_SVN_VALUE @LIBSPDM_TPM_SVN@
+#define LIBSPDM_TPM_SVN_NV_INDEX_ENABLED @LIBSPDM_TPM_SVN_NV_INDEX_ENABLED@
+#define LIBSPDM_TPM_SVN_NV_INDEX @LIBSPDM_TPM_SVN_NV_INDEX_VALUE@
+#define LIBSPDM_TPM_DEVICE_OPERATIONAL_MODE_CAPABILITIES SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE
+#define LIBSPDM_TPM_DEVICE_OPERATIONAL_MODE_STATE SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE
+#define LIBSPDM_TPM_DEVICE_MODE_CAPABILITIES 0
+#define LIBSPDM_TPM_DEVICE_MODE_STATE 0
+
+typedef struct {
+    libspdm_tpm_measurement_manifest_header_t header;
+    libspdm_tpm_measurement_manifest_entry_t entries[LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER];
+} libspdm_tpm_measurement_manifest_t;
+
+static const libspdm_tpm_measurement_manifest_t m_libspdm_tpm_measurement_manifest = {
+    {
+        1,
+        (uint16_t)sizeof(libspdm_tpm_measurement_manifest_t),
+        @LIBSPDM_TPM_MANIFEST_VENDOR_ID@,
+        LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER,
+        0,
+        0,
+    },
+    {
+@MEASUREMENT_MANIFEST_ENTRIES@    }
+};

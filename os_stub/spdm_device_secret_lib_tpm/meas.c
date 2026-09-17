@@ -19,6 +19,7 @@
 #include "internal/libspdm_device_secret_lib.h"
 #include "library/spdm_crypt_ext_lib.h"
 #include "internal/libspdm_common_lib.h"
+#include "meas_impl.h"
 
 #if (LIBSPDM_ENABLE_CAPABILITY_MEL_CAP) || (LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP)
 
@@ -27,348 +28,180 @@ uint8_t m_libspdm_mel[LIBSPDM_MAX_MEASUREMENT_EXTENSION_LOG_SIZE];
 
 #endif /* (LIBSPDM_ENABLE_CAPABILITY_MEL_CAP) || (LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP) */
 
+#if LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP
+static bool libspdm_tpm_append_mel_entry(
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size,
+    uint8_t measurements_index,
+    uint8_t measurement_value_type,
+    const void *measurement_value,
+    size_t measurement_value_size)
+{
+    spdm_mel_entry_dmtf_t *entry;
+    size_t offset;
+    size_t entry_size;
+
+    if (measurement_value_size > UINT16_MAX) {
+        return false;
+    }
+
+    if (mel_buffer_size < sizeof(spdm_measurement_extension_log_dmtf_t)) {
+        return false;
+    }
+
+    offset = sizeof(spdm_measurement_extension_log_dmtf_t) +
+             measurement_extension_log->mel_entries_len;
+    entry_size = sizeof(spdm_mel_entry_dmtf_t) + measurement_value_size;
+    if ((offset > mel_buffer_size) || (entry_size > (mel_buffer_size - offset))) {
+        return false;
+    }
+
+    entry = (spdm_mel_entry_dmtf_t *)((uint8_t *)measurement_extension_log + offset);
+    entry->mel_index = measurement_extension_log->number_of_entries + 1;
+    entry->meas_index = measurements_index;
+    libspdm_write_uint24(entry->reserved, 0);
+    entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_type =
+        measurement_value_type;
+    entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size =
+        (uint16_t)measurement_value_size;
+    libspdm_copy_mem((void *)(entry + 1), measurement_value_size,
+                     measurement_value, measurement_value_size);
+
+    measurement_extension_log->number_of_entries++;
+    measurement_extension_log->mel_entries_len += (uint32_t)entry_size;
+
+    if (mel_entry != NULL) {
+        *mel_entry = (spdm_mel_entry_dmtf_t *)((uint8_t *)entry + entry_size);
+    }
+
+    return true;
+}
+
+static bool libspdm_tpm_append_pcr_mel_entry(
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size,
+    uint32_t measurement_hash_algo,
+    uint8_t measurements_index)
+{
+    size_t hash_size;
+    size_t buffer_size;
+    uint8_t pcr_digest[LIBSPDM_MAX_HASH_SIZE];
+
+    if (measurement_hash_algo ==
+        SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_RAW_BIT_STREAM_ONLY) {
+        return true;
+    }
+
+    hash_size = libspdm_get_measurement_hash_size(measurement_hash_algo);
+    if ((hash_size == 0) || (hash_size > sizeof(pcr_digest))) {
+        return true;
+    }
+
+    buffer_size = hash_size;
+    if (!libspdm_tpm_read_pcr(measurement_hash_algo, (uint32_t)(measurements_index - 1),
+                              pcr_digest, &buffer_size)) {
+        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "failed to read pcr from TPM"));
+        return true;
+    }
+
+    if (buffer_size != hash_size) {
+        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "hash_size (%d) != buffer_size (%d)\n",
+                       (int)hash_size, (int)buffer_size));
+        return true;
+    }
+
+    return libspdm_tpm_append_mel_entry(
+        measurement_extension_log, mel_entry, mel_buffer_size, measurements_index,
+        (uint8_t)(measurements_index - 1), pcr_digest, hash_size);
+}
+
+static bool libspdm_tpm_append_svn_mel_entry(
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size,
+    uint8_t measurements_index)
+{
+    spdm_measurements_secure_version_number_t svn;
+
+    if (!libspdm_tpm_get_svn(&svn)) {
+        return false;
+    }
+
+    return libspdm_tpm_append_mel_entry(
+        measurement_extension_log, mel_entry, mel_buffer_size, measurements_index,
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_SECURE_VERSION_NUMBER |
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM,
+        &svn, sizeof(svn));
+}
+
+static bool libspdm_tpm_append_manifest_mel_entry(
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size,
+    uint8_t measurements_index)
+{
+    const void *manifest;
+    size_t manifest_size;
+
+    manifest = libspdm_tpm_get_measurement_manifest(&manifest_size);
+
+    return libspdm_tpm_append_mel_entry(
+        measurement_extension_log, mel_entry, mel_buffer_size, measurements_index,
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_MEASUREMENT_MANIFEST |
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM,
+        manifest, manifest_size);
+}
+
+static bool libspdm_tpm_append_device_mode_mel_entry(
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size,
+    uint8_t measurements_index)
+{
+    spdm_measurements_device_mode_t device_mode;
+
+    libspdm_tpm_get_device_mode(&device_mode);
+
+    return libspdm_tpm_append_mel_entry(
+        measurement_extension_log, mel_entry, mel_buffer_size, measurements_index,
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_DEVICE_MODE |
+        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM,
+        &device_mode, sizeof(device_mode));
+}
+#endif /* LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP */
+
+#if LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP
+#include "meas_config.h"
+#endif /* LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP */
+
 #if (LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP) || (LIBSPDM_ENABLE_CAPABILITY_MEL_CAP)
 void libspdm_generate_mel(uint32_t measurement_hash_algo)
 {
     spdm_measurement_extension_log_dmtf_t *measurement_extension_log;
-    spdm_mel_entry_dmtf_t *mel_entry1;
-    spdm_mel_entry_dmtf_t *mel_entry2;
-    spdm_mel_entry_dmtf_t *mel_entry3;
+    spdm_mel_entry_dmtf_t *mel_entry;
 
-    uint8_t rom_informational[] = "ROM";
-    uint8_t bootfv_informational[] = "Boot FW";
-    uint32_t version = 0x0100030A;
-
-    /*generate MEL*/
+    libspdm_zero_mem(m_libspdm_mel, sizeof(m_libspdm_mel));
     measurement_extension_log = (spdm_measurement_extension_log_dmtf_t *)m_libspdm_mel;
+    mel_entry = (spdm_mel_entry_dmtf_t *)((uint8_t *)measurement_extension_log +
+                                          sizeof(spdm_measurement_extension_log_dmtf_t));
 
-    measurement_extension_log->number_of_entries = 3;
-    measurement_extension_log->mel_entries_len =
-        measurement_extension_log->number_of_entries * sizeof(spdm_mel_entry_dmtf_t) +
-        sizeof(rom_informational) - 1 + sizeof(bootfv_informational) - 1 + sizeof(version);
-    measurement_extension_log->reserved = 0;
-
-    /*MEL Entry 1: informational ROM */
-    mel_entry1 = (spdm_mel_entry_dmtf_t *)((uint8_t *)measurement_extension_log +
-                                           sizeof(spdm_measurement_extension_log_dmtf_t));
-    mel_entry1->mel_index = 1;
-    mel_entry1->meas_index = LIBSPDM_MEASUREMENT_INDEX_HEM;
-    libspdm_write_uint24(mel_entry1->reserved, 0);
-    mel_entry1->measurement_block_dmtf_header.dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_INFORMATIONAL |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    mel_entry1->measurement_block_dmtf_header.dmtf_spec_measurement_value_size =
-        sizeof(rom_informational) - 1;
-    libspdm_copy_mem((void *)(mel_entry1 + 1), sizeof(rom_informational) - 1,
-                     rom_informational, sizeof(rom_informational) - 1);
-
-    /*MEL Entry 2: informational Boot FW */
-    mel_entry2 = (spdm_mel_entry_dmtf_t *)((uint8_t *)(mel_entry1 + 1) +
-                                           sizeof(rom_informational) - 1);
-    mel_entry2->mel_index = 2;
-    mel_entry2->meas_index = LIBSPDM_MEASUREMENT_INDEX_HEM;
-    libspdm_write_uint24(mel_entry2->reserved, 0);
-    mel_entry2->measurement_block_dmtf_header.dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_INFORMATIONAL |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    mel_entry2->measurement_block_dmtf_header.dmtf_spec_measurement_value_size =
-        sizeof(bootfv_informational) - 1;
-    libspdm_copy_mem((void *)(mel_entry2 + 1), sizeof(bootfv_informational) - 1,
-                     bootfv_informational, sizeof(bootfv_informational) - 1);
-
-    /*MEL Entry 3: version 0x0100030A */
-    mel_entry3 = (spdm_mel_entry_dmtf_t *)((uint8_t *)(mel_entry2 + 1) +
-                                           sizeof(bootfv_informational) - 1);
-    mel_entry3->mel_index = 3;
-    mel_entry3->meas_index = LIBSPDM_MEASUREMENT_INDEX_HEM;
-    libspdm_write_uint24(mel_entry3->reserved, 0);
-    mel_entry3->measurement_block_dmtf_header.dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_VERSION |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    mel_entry3->measurement_block_dmtf_header.dmtf_spec_measurement_value_size = sizeof(version);
-    libspdm_copy_mem((void *)(mel_entry3 + 1), sizeof(version), &version, sizeof(version));
+#if LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP
+    if (!libspdm_tpm_generate_measurement_extension_log(
+            measurement_hash_algo, measurement_extension_log, &mel_entry,
+            sizeof(m_libspdm_mel))) {
+        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "failed to generate TPM MEL\n"));
+        libspdm_zero_mem(m_libspdm_mel, sizeof(m_libspdm_mel));
+    }
+#else
+    (void)measurement_hash_algo;
+    (void)mel_entry;
+#endif
 }
 #endif /*(LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP) || (LIBSPDM_ENABLE_CAPABILITY_MEL_CAP)*/
 
 #if LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP
-/**
- * Fill image hash measurement block.
- *
- * @return measurement block size.
- **/
-size_t libspdm_fill_measurement_image_hash_block (
-    bool use_bit_stream,
-    uint32_t measurement_hash_algo,
-    uint8_t measurements_index,
-    spdm_measurement_block_dmtf_t *measurement_block
-    )
-{
-    size_t hash_size;
-    void *buffer = NULL;
-    size_t buffer_size = 0;
-
-    hash_size = libspdm_get_measurement_hash_size(measurement_hash_algo);
-
-    if (use_bit_stream) {
-        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "use_bit_stream for image_hash_block for TPM device is not supported"));
-        return 0;
-    }
-
-    if (measurements_index == 0) {
-        return 0;
-    }
-
-    measurement_block->measurement_block_common_header
-    .index = measurements_index;
-    measurement_block->measurement_block_common_header
-    .measurement_specification =
-        SPDM_MEASUREMENT_SPECIFICATION_DMTF;
-
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_type =
-        (measurements_index - 1);
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_size =
-        (uint16_t)hash_size;
-
-    measurement_block->measurement_block_common_header
-    .measurement_size =
-        (uint16_t)(sizeof(spdm_measurement_block_dmtf_header_t) +
-                   (uint16_t)hash_size);
-
-    buffer = (uint8_t*)(measurement_block + 1);
-    buffer_size = hash_size;
-    if (!libspdm_tpm_read_pcr(measurement_hash_algo, (uint32_t)(measurements_index - 1), buffer, &buffer_size)) {
-        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "failed to read pcr from TPM"));
-        return 0;
-    }
-
-    if (buffer_size != hash_size) {
-        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "hash_size (%d) != buffer_size (%d)\n", (int)hash_size, (int)buffer_size));
-        return 0;
-    }
-
-    return sizeof(spdm_measurement_block_dmtf_t) + hash_size;
-}
-
-/**
- * Fill svn measurement block.
- *
- * @return measurement block size.
- **/
-size_t libspdm_fill_measurement_svn_block (
-    spdm_measurement_block_dmtf_t *measurement_block
-    )
-{
-    spdm_measurements_secure_version_number_t svn;
-
-    measurement_block->measurement_block_common_header
-    .index = LIBSPDM_MEASUREMENT_INDEX_SVN;
-    measurement_block->measurement_block_common_header
-    .measurement_specification =
-        SPDM_MEASUREMENT_SPECIFICATION_DMTF;
-
-    svn = 0x7;
-
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_SECURE_VERSION_NUMBER |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_size =
-        (uint16_t)sizeof(svn);
-
-    measurement_block->measurement_block_common_header
-    .measurement_size =
-        (uint16_t)(sizeof(spdm_measurement_block_dmtf_header_t) +
-                   (uint16_t)sizeof(svn));
-
-    libspdm_copy_mem((void *)(measurement_block + 1), sizeof(svn), (void *)&svn, sizeof(svn));
-
-    return sizeof(spdm_measurement_block_dmtf_t) + sizeof(svn);
-}
-
-/**
- * Fill HEM measurement block.
- *
- * @param  measurement_block          A pointer to store measurement block.
- * @param  measurement_hash_algo      Indicates the measurement hash algorithm.
- *                                    It must align with measurement_hash_alg
- *                                    (SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_*)
- *
- * @return measurement block size.
- **/
-size_t libspdm_fill_measurement_hem_block (
-    spdm_measurement_block_dmtf_t *measurement_block, uint32_t measurement_hash_algo
-    )
-{
-    size_t hash_size;
-    spdm_measurement_extension_log_dmtf_t *measurement_extension_log;
-    spdm_mel_entry_dmtf_t *mel_entry;
-    uint32_t index;
-    uint8_t *verify_hem;
-
-    if (measurement_hash_algo == SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_RAW_BIT_STREAM_ONLY) {
-        return 0;
-    }
-
-    libspdm_generate_mel(measurement_hash_algo);
-
-    hash_size = libspdm_get_measurement_hash_size(measurement_hash_algo);
-    if (measurement_block == NULL) {
-        return sizeof(spdm_measurement_block_dmtf_t) + hash_size;
-    }
-
-    /*MEL*/
-    measurement_extension_log = (spdm_measurement_extension_log_dmtf_t *)m_libspdm_mel;
-
-    /*generate measurement block*/
-    measurement_block->measurement_block_common_header
-    .index = LIBSPDM_MEASUREMENT_INDEX_HEM;
-    measurement_block->measurement_block_common_header
-    .measurement_specification =
-        SPDM_MEASUREMENT_SPECIFICATION_DMTF;
-
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_HASH_EXTEND_MEASUREMENT;
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_size =
-        (uint16_t)hash_size;
-
-    measurement_block->measurement_block_common_header
-    .measurement_size =
-        (uint16_t)(sizeof(spdm_measurement_block_dmtf_header_t) +
-                   (uint16_t)hash_size);
-
-    verify_hem = malloc(measurement_extension_log->mel_entries_len + hash_size);
-    if (verify_hem == NULL) {
-        return 0;
-    }
-
-    libspdm_zero_mem(verify_hem, measurement_extension_log->mel_entries_len + hash_size);
-    mel_entry = (spdm_mel_entry_dmtf_t *)((uint8_t *)measurement_extension_log +
-                                          sizeof(spdm_measurement_extension_log_dmtf_t));
-    for (index = 0; index < measurement_extension_log->number_of_entries; index++) {
-        libspdm_copy_mem(
-            verify_hem + hash_size,
-            measurement_extension_log->mel_entries_len,
-            mel_entry,
-            sizeof(spdm_mel_entry_dmtf_t) +
-            mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size);
-
-        if (!libspdm_measurement_hash_all(
-                measurement_hash_algo,
-                verify_hem,
-                hash_size + sizeof(spdm_mel_entry_dmtf_t) +
-                mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size,
-                verify_hem
-                )) {
-            free(verify_hem);
-            return 0;
-        }
-        mel_entry = (spdm_mel_entry_dmtf_t *)
-                    ((uint8_t *)mel_entry + sizeof(spdm_mel_entry_dmtf_t)+
-                     mel_entry->measurement_block_dmtf_header.dmtf_spec_measurement_value_size);
-    }
-
-    libspdm_copy_mem((void *)(measurement_block + 1), hash_size, verify_hem, hash_size);
-    free(verify_hem);
-    return sizeof(spdm_measurement_block_dmtf_t) + hash_size;
-}
-
-/**
- * Fill manifest measurement block.
- *
- * @return measurement block size.
- **/
-size_t libspdm_fill_measurement_manifest_block (
-    spdm_measurement_block_dmtf_t *measurement_block
-    )
-{
-    uint8_t data[LIBSPDM_MEASUREMENT_MANIFEST_SIZE];
-
-    measurement_block->measurement_block_common_header
-    .index = SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_MEASUREMENT_MANIFEST;
-    measurement_block->measurement_block_common_header
-    .measurement_specification =
-        SPDM_MEASUREMENT_SPECIFICATION_DMTF;
-
-    libspdm_set_mem(data, sizeof(data),
-                    (uint8_t)SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_MEASUREMENT_MANIFEST);
-
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_MEASUREMENT_MANIFEST |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_size =
-        (uint16_t)sizeof(data);
-
-    measurement_block->measurement_block_common_header
-    .measurement_size =
-        (uint16_t)(sizeof(spdm_measurement_block_dmtf_header_t) +
-                   (uint16_t)sizeof(data));
-
-    libspdm_copy_mem((void *)(measurement_block + 1), sizeof(data), data, sizeof(data));
-
-    return sizeof(spdm_measurement_block_dmtf_t) + sizeof(data);
-}
-
-/**
- * Fill device mode measurement block.
- *
- * @return measurement block size.
- **/
-size_t libspdm_fill_measurement_device_mode_block (
-    spdm_measurement_block_dmtf_t *measurement_block
-    )
-{
-    spdm_measurements_device_mode_t device_mode;
-
-    measurement_block->measurement_block_common_header
-    .index = SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_DEVICE_MODE;
-    measurement_block->measurement_block_common_header
-    .measurement_specification =
-        SPDM_MEASUREMENT_SPECIFICATION_DMTF;
-
-    device_mode.operational_mode_capabilities =
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_MANUFACTURING_MODE |
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_VALIDATION_MODE |
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE |
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_RECOVERY_MODE |
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_RMA_MODE |
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_DECOMMISSIONED_MODE;
-    device_mode.operational_mode_state =
-        SPDM_MEASUREMENT_DEVICE_OPERATION_MODE_NORMAL_MODE;
-    device_mode.device_mode_capabilities =
-        SPDM_MEASUREMENT_DEVICE_MODE_NON_INVASIVE_DEBUG_MODE_IS_ACTIVE |
-        SPDM_MEASUREMENT_DEVICE_MODE_INVASIVE_DEBUG_MODE_IS_ACTIVE |
-        SPDM_MEASUREMENT_DEVICE_MODE_NON_INVASIVE_DEBUG_MODE_HAS_BEEN_ACTIVE |
-        SPDM_MEASUREMENT_DEVICE_MODE_INVASIVE_DEBUG_MODE_HAS_BEEN_ACTIVE |
-        SPDM_MEASUREMENT_DEVICE_MODE_INVASIVE_DEBUG_MODE_HAS_BEEN_ACTIVE_AFTER_MFG;
-    device_mode.device_mode_state =
-        SPDM_MEASUREMENT_DEVICE_MODE_NON_INVASIVE_DEBUG_MODE_IS_ACTIVE |
-        SPDM_MEASUREMENT_DEVICE_MODE_INVASIVE_DEBUG_MODE_HAS_BEEN_ACTIVE_AFTER_MFG;
-
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_type =
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_DEVICE_MODE |
-        SPDM_MEASUREMENT_BLOCK_MEASUREMENT_TYPE_RAW_BIT_STREAM;
-    measurement_block->measurement_block_dmtf_header
-    .dmtf_spec_measurement_value_size =
-        (uint16_t)sizeof(device_mode);
-
-    measurement_block->measurement_block_common_header
-    .measurement_size =
-        (uint16_t)(sizeof(spdm_measurement_block_dmtf_header_t) +
-                   (uint16_t)sizeof(device_mode));
-
-    libspdm_copy_mem((void *)(measurement_block + 1), sizeof(device_mode),
-                     (void *)&device_mode, sizeof(device_mode));
-
-    return sizeof(spdm_measurement_block_dmtf_t) + sizeof(device_mode);
-}
 
 bool g_check_measurement_request_context = false;
 uint64_t g_measurement_request_context;
@@ -390,9 +223,6 @@ libspdm_return_t libspdm_measurement_collection(
     void *measurements,
     size_t *measurements_size)
 {
-    spdm_measurement_block_dmtf_t *measurement_block;
-    size_t hash_size;
-    uint8_t index;
     size_t total_size_needed;
     bool use_bit_stream;
     size_t measurement_block_size;
@@ -412,8 +242,7 @@ libspdm_return_t libspdm_measurement_collection(
         }
     }
 
-    hash_size = libspdm_get_measurement_hash_size(measurement_hash_algo);
-    LIBSPDM_ASSERT(hash_size != 0);
+    LIBSPDM_ASSERT(libspdm_get_measurement_hash_size(measurement_hash_algo) != 0);
 
     use_bit_stream = false;
     if ((measurement_hash_algo == SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_RAW_BIT_STREAM_ONLY) ||
@@ -424,36 +253,16 @@ libspdm_return_t libspdm_measurement_collection(
 
     if (measurements_index ==
         SPDM_GET_MEASUREMENTS_REQUEST_MEASUREMENT_OPERATION_TOTAL_NUMBER_OF_MEASUREMENTS) {
-        *measurements_count = LIBSPDM_MEASUREMENT_BLOCK_NUMBER;
+        *measurements_count = LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER;
         goto successful_return;
     } else if (measurements_index ==
                SPDM_GET_MEASUREMENTS_REQUEST_MEASUREMENT_OPERATION_ALL_MEASUREMENTS) {
 
-        /* Calculate total_size_needed based on hash algo selected.
-         * If we have an hash algo, then the first HASH_NUMBER elements will be
-         * hash values, otherwise HASH_NUMBER raw bitstream values.*/
-        if (!use_bit_stream) {
-            total_size_needed =
-                LIBSPDM_MEASUREMENT_BLOCK_HASH_NUMBER *
-                (sizeof(spdm_measurement_block_dmtf_t) + hash_size);
-        } else {
-            total_size_needed =
-                LIBSPDM_MEASUREMENT_BLOCK_HASH_NUMBER *
-                (sizeof(spdm_measurement_block_dmtf_t) + LIBSPDM_MEASUREMENT_RAW_DATA_SIZE);
+        total_size_needed =
+            libspdm_tpm_get_measurement_total_size(use_bit_stream, measurement_hash_algo);
+        if ((LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER != 0) && (total_size_needed == 0)) {
+            return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
         }
-        /* Next one - SVN is always raw bitstream data.*/
-        total_size_needed +=
-            (sizeof(spdm_measurement_block_dmtf_t) +
-             sizeof(spdm_measurements_secure_version_number_t));
-        /* Next one - HEM is always digest data.*/
-        total_size_needed +=
-            (sizeof(spdm_measurement_block_dmtf_t) + hash_size);
-        /* Next one - manifest is always raw bitstream data.*/
-        total_size_needed +=
-            (sizeof(spdm_measurement_block_dmtf_t) + LIBSPDM_MEASUREMENT_MANIFEST_SIZE);
-        /* Next one - device_mode is always raw bitstream data.*/
-        total_size_needed +=
-            (sizeof(spdm_measurement_block_dmtf_t) + sizeof(spdm_measurements_device_mode_t));
 
         LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
         if (total_size_needed > *measurements_size) {
@@ -461,143 +270,39 @@ libspdm_return_t libspdm_measurement_collection(
         }
 
         *measurements_size = total_size_needed;
-        *measurements_count = LIBSPDM_MEASUREMENT_BLOCK_NUMBER;
-        measurement_block = measurements;
-
-        /* The first HASH_NUMBER blocks may be hash values or raw bitstream*/
-        for (index = 1; index <= LIBSPDM_MEASUREMENT_BLOCK_HASH_NUMBER; index++) {
-            measurement_block_size = libspdm_fill_measurement_image_hash_block (use_bit_stream,
-                                                                                measurement_hash_algo,
-                                                                                index,
-                                                                                measurement_block);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-            measurement_block = (void *)((uint8_t *)measurement_block + measurement_block_size);
-        }
-        /* Next one - SVN is always raw bitstream data.*/
-        {
-            measurement_block_size = libspdm_fill_measurement_svn_block (measurement_block);
-            measurement_block = (void *)((uint8_t *)measurement_block + measurement_block_size);
-        }
-        /* Next one - HEM is always digest data.*/
-        {
-            measurement_block_size = libspdm_fill_measurement_hem_block (measurement_block,
-                                                                         measurement_hash_algo);
-            measurement_block = (void *)((uint8_t *)measurement_block + measurement_block_size);
-        }
-        /* Next one - manifest is always raw bitstream data.*/
-        {
-            measurement_block_size = libspdm_fill_measurement_manifest_block (measurement_block);
-            measurement_block = (void *)((uint8_t *)measurement_block + measurement_block_size);
-        }
-        /* Next one - device_mode is always raw bitstream data.*/
-        {
-            measurement_block_size = libspdm_fill_measurement_device_mode_block (measurement_block);
-            measurement_block = (void *)((uint8_t *)measurement_block + measurement_block_size);
+        *measurements_count = LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER;
+        measurement_block_size = libspdm_tpm_fill_all_measurement_blocks(
+            use_bit_stream, measurement_hash_algo, measurements);
+        if ((LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER != 0) &&
+            (measurement_block_size != total_size_needed)) {
+            return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
         }
 
         goto successful_return;
     } else {
-        /* One Index */
-        if (measurements_index <= LIBSPDM_MEASUREMENT_BLOCK_HASH_NUMBER) {
-            if (!use_bit_stream) {
-                total_size_needed =
-                    sizeof(spdm_measurement_block_dmtf_t) +
-                    hash_size;
-            } else {
-                total_size_needed =
-                    sizeof(spdm_measurement_block_dmtf_t) +
-                    LIBSPDM_MEASUREMENT_RAW_DATA_SIZE;
-            }
-            LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
-            if (total_size_needed > *measurements_size) {
-                return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
-            }
-
-            *measurements_count = 1;
-            *measurements_size = total_size_needed;
-
-            measurement_block = measurements;
-            measurement_block_size = libspdm_fill_measurement_image_hash_block (use_bit_stream,
-                                                                                measurement_hash_algo,
-                                                                                measurements_index,
-                                                                                measurement_block);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-        } else if (measurements_index == LIBSPDM_MEASUREMENT_INDEX_SVN) {
-            total_size_needed =
-                sizeof(spdm_measurement_block_dmtf_t) +
-                sizeof(spdm_measurements_secure_version_number_t);
-            LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
-            if (total_size_needed > *measurements_size) {
-                return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
-            }
-
-            *measurements_count = 1;
-            *measurements_size = total_size_needed;
-
-            measurement_block = measurements;
-            measurement_block_size = libspdm_fill_measurement_svn_block (measurement_block);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-        } else if (measurements_index == LIBSPDM_MEASUREMENT_INDEX_HEM) {
-            total_size_needed =
-                sizeof(spdm_measurement_block_dmtf_t) + hash_size;
-            LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
-            if (total_size_needed > *measurements_size) {
-                return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
-            }
-
-            *measurements_count = 1;
-            *measurements_size = total_size_needed;
-
-            measurement_block = measurements;
-            measurement_block_size = libspdm_fill_measurement_hem_block (measurement_block,
-                                                                         measurement_hash_algo);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-        } else if (measurements_index ==
-                   SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_MEASUREMENT_MANIFEST) {
-            total_size_needed =
-                sizeof(spdm_measurement_block_dmtf_t) +
-                LIBSPDM_MEASUREMENT_MANIFEST_SIZE;
-            LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
-            if (total_size_needed > *measurements_size) {
-                return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
-            }
-
-            *measurements_count = 1;
-            *measurements_size = total_size_needed;
-
-            measurement_block = measurements;
-            measurement_block_size = libspdm_fill_measurement_manifest_block (measurement_block);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-        } else if (measurements_index == SPDM_MEASUREMENT_BLOCK_MEASUREMENT_INDEX_DEVICE_MODE) {
-            total_size_needed =
-                sizeof(spdm_measurement_block_dmtf_t) +
-                sizeof(spdm_measurements_device_mode_t);
-            LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
-            if (total_size_needed > *measurements_size) {
-                return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
-            }
-
-            *measurements_count = 1;
-            *measurements_size = total_size_needed;
-
-            measurement_block = measurements;
-            measurement_block_size = libspdm_fill_measurement_device_mode_block (measurement_block);
-            if (measurement_block_size == 0) {
-                return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
-            }
-        } else {
+        if (!libspdm_tpm_is_measurement_index_configured(measurements_index)) {
             *measurements_count = 0;
             return LIBSPDM_STATUS_MEAS_INVALID_INDEX;
+        }
+
+        total_size_needed = libspdm_tpm_fill_measurement_block(
+            use_bit_stream, measurement_hash_algo, measurements_index, NULL);
+        if (total_size_needed == 0) {
+            return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
+        }
+
+        LIBSPDM_ASSERT(total_size_needed <= *measurements_size);
+        if (total_size_needed > *measurements_size) {
+            return LIBSPDM_STATUS_BUFFER_TOO_SMALL;
+        }
+
+        *measurements_count = 1;
+        *measurements_size = total_size_needed;
+
+        measurement_block_size = libspdm_tpm_fill_measurement_block(
+            use_bit_stream, measurement_hash_algo, measurements_index, measurements);
+        if (measurement_block_size == 0) {
+            return LIBSPDM_STATUS_MEAS_INTERNAL_ERROR;
         }
     }
 

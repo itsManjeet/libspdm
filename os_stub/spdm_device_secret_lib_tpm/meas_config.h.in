@@ -1,0 +1,83 @@
+/**
+ *  Copyright Notice:
+ *  Copyright 2026 DMTF. All rights reserved.
+ *  License: BSD 3-Clause License. For full text see link: https://github.com/DMTF/libspdm/blob/main/LICENSE.md
+ **/
+
+#pragma once
+
+/* Auto-generated TPM measurement configuration */
+
+#define LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER @MEASUREMENT_COUNT@
+
+static bool libspdm_tpm_is_measurement_index_configured(uint8_t measurements_index)
+{
+    switch (measurements_index) {
+@MEASUREMENT_CONFIGURED_CASES@        return true;
+    default:
+        return false;
+    }
+}
+
+static size_t libspdm_tpm_fill_measurement_block(
+    bool use_bit_stream,
+    uint32_t measurement_hash_algo,
+    uint8_t measurements_index,
+    spdm_measurement_block_dmtf_t *measurement_block)
+{
+    size_t measurement_block_size;
+
+    (void)use_bit_stream;
+    (void)measurement_hash_algo;
+    (void)measurement_block;
+
+    switch (measurements_index) {
+@MEASUREMENT_DISPATCH_CASES@    default:
+        return 0;
+    }
+}
+
+static size_t libspdm_tpm_get_measurement_total_size(
+    bool use_bit_stream,
+    uint32_t measurement_hash_algo)
+{
+    size_t total_size;
+    size_t measurement_block_size;
+
+    (void)use_bit_stream;
+    (void)measurement_hash_algo;
+
+    total_size = 0;
+@MEASUREMENT_TOTAL_SIZE_BODY@    return total_size;
+}
+
+static size_t libspdm_tpm_fill_all_measurement_blocks(
+    bool use_bit_stream,
+    uint32_t measurement_hash_algo,
+    void *measurements)
+{
+    spdm_measurement_block_dmtf_t *measurement_block;
+    size_t total_size;
+    size_t measurement_block_size;
+
+    (void)use_bit_stream;
+    (void)measurement_hash_algo;
+
+    measurement_block = measurements;
+    total_size = 0;
+@MEASUREMENT_FILL_ALL_BODY@    return total_size;
+}
+
+static bool libspdm_tpm_generate_measurement_extension_log(
+    uint32_t measurement_hash_algo,
+    spdm_measurement_extension_log_dmtf_t *measurement_extension_log,
+    spdm_mel_entry_dmtf_t **mel_entry,
+    size_t mel_buffer_size)
+{
+    (void)measurement_hash_algo;
+    (void)measurement_extension_log;
+    (void)mel_entry;
+    (void)mel_buffer_size;
+
+@MEASUREMENT_MEL_BODY@    return true;
+}
