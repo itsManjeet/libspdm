@@ -30,6 +30,8 @@ typedef struct {
 } libspdm_tpm_measurement_manifest_entry_t;
 #pragma pack()
 
+const char *libspdm_tpm_get_responder_key_handle(uint8_t slot_id);
+
 #if LIBSPDM_ENABLE_CAPABILITY_MEAS_CAP
 
 bool libspdm_tpm_get_svn(

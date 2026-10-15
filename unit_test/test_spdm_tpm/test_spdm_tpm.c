@@ -15,6 +15,7 @@
 #include "keys.h"
 #include "meas_impl.h"
 #include "meas_data.h"
+#include <tss2/tss2_mu.h>
 
 extern size_t libspdm_secret_lib_meas_opaque_data_size;
 
@@ -382,6 +383,24 @@ void test_spdm_tpm_quote_validation(void **state)
     assert_false(status);
 }
 
+static void test_spdm_tpm_quote_rejects_invalid_selection(void **state)
+{
+    uint8_t buffer[2048];
+    size_t size = sizeof(buffer);
+    uint8_t pcrs[] = {0, 24};
+    const uint32_t bank = SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256;
+    const char *key = LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_0;
+
+    assert_false(libspdm_tpm_quote(key, bank, pcrs, 2, NULL, 0, buffer, &size));
+    pcrs[1] = 0;
+    assert_false(libspdm_tpm_quote(key, bank, pcrs, 2, NULL, 0, buffer, &size));
+    assert_false(libspdm_tpm_quote(key, bank, NULL, 0, NULL, 0, buffer, &size));
+    assert_false(libspdm_tpm_quote(key, bank, pcrs, 1, NULL, 32, buffer, &size));
+    assert_false(libspdm_tpm_quote(key, bank, pcrs, 1, buffer, sizeof(buffer), buffer, &size));
+    assert_false(libspdm_tpm_quote("handle:0x81000021junk", bank, pcrs, 1,
+                                 NULL, 0, buffer, &size));
+}
+
 /* --------------------------------------------------------------------------
  * Live TPM Simulator Tests (gated by TPM2TOOLS_TCTI)
  * -------------------------------------------------------------------------- */
@@ -649,6 +668,118 @@ void test_spdm_tpm_live_quote(void **state)
  * Main Test Runner
  * -------------------------------------------------------------------------- */
 
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+static void test_spdm_tpm_live_measurement_quote(void **state)
+{
+    libspdm_context_t *context;
+    spdm_get_measurements_request_t request = {0};
+    uint8_t opaque[2048];
+    uint8_t measurement[128];
+    uint8_t pcr_values[24 * 32];
+    uint32_t pcr_mask = 0;
+    size_t pcr_values_size = 0;
+    size_t digest_size;
+    uint8_t count;
+    size_t opaque_size;
+    size_t measurement_size = sizeof(measurement);
+    size_t index;
+    uint8_t measurement_index = 0;
+    void *cert = NULL;
+    size_t cert_size = 0;
+    void *public_key = NULL;
+    const uint32_t bank = SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256;
+    const uint32_t asym = SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P256;
+    const spdm_version_number_t version = SPDM_MESSAGE_VERSION_12 << SPDM_VERSION_NUMBER_SHIFT_BIT;
+
+    if (!is_tpm_available()) {
+        skip();
+    }
+    for (index = 0; index < LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER; index++) {
+        if (m_libspdm_tpm_measurement_manifest.entries[index].kind ==
+            LIBSPDM_TPM_MEASUREMENT_KIND_PCR) {
+            measurement_index = m_libspdm_tpm_measurement_manifest.entries[index].index;
+            break;
+        }
+    }
+    if (measurement_index == 0) {
+        skip();
+    }
+    context = calloc(1, sizeof(*context));
+    assert_non_null(context);
+    context->connection_info.algorithm.other_params_support = SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1;
+    request.header.spdm_version = SPDM_MESSAGE_VERSION_12;
+    request.header.request_response_code = SPDM_GET_MEASUREMENTS;
+    request.header.param1 = SPDM_GET_MEASUREMENTS_REQUEST_ATTRIBUTES_GENERATE_SIGNATURE;
+    request.header.param2 = measurement_index;
+    memset(request.nonce, 0xA5, sizeof(request.nonce));
+    context->last_spdm_request = &request;
+    context->last_spdm_request_size = sizeof(request);
+    assert_int_equal(libspdm_measurement_collection(context, NULL, version,
+                     SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, measurement_index,
+                     request.header.param1, request.nonce, 0, 0, NULL, NULL,
+                     &count, measurement, &measurement_size), LIBSPDM_STATUS_SUCCESS);
+    opaque_size = sizeof(opaque);
+    assert_true(libspdm_measurement_opaque_data(context, NULL, version,
+                SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, measurement_index,
+                request.header.param1, 0, NULL, opaque, &opaque_size));
+    assert_true(opaque_size > 8);
+    assert_true(libspdm_read_responder_certificate(asym, &cert, &cert_size));
+    assert_true(libspdm_asym_get_public_key_from_x509(asym, cert, cert_size, &public_key));
+    assert_true(libspdm_tpm_verify_quote(public_key, asym, bank, opaque, opaque_size,
+                                        request.nonce, sizeof(request.nonce)));
+    /* Short buffers report a required size without writing past the capacity. */
+    opaque_size = 1;
+    opaque[0] = 0xCC;
+    assert_false(libspdm_measurement_opaque_data(context, NULL, version,
+                 SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, measurement_index,
+                 request.header.param1, 0, NULL, opaque, &opaque_size));
+    assert_true(opaque_size > 1);
+    assert_int_equal(opaque[0], 0xCC);
+    /* The all-measurements selection contains every configured PCR only. */
+    for (index = 0; index < LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER; index++) {
+        if (m_libspdm_tpm_measurement_manifest.entries[index].kind ==
+            LIBSPDM_TPM_MEASUREMENT_KIND_PCR) {
+            pcr_mask |= 1u << (m_libspdm_tpm_measurement_manifest.entries[index].index - 1);
+        }
+    }
+    for (index = 0; index < 24; index++) {
+        if ((pcr_mask & (1u << index)) != 0) {
+            digest_size = 32;
+            assert_true(libspdm_tpm_read_pcr(bank, (uint32_t)index,
+                        pcr_values + pcr_values_size, &digest_size));
+            pcr_values_size += digest_size;
+        }
+    }
+    request.header.param2 = 0xFF;
+    opaque_size = sizeof(opaque);
+    assert_true(libspdm_measurement_opaque_data(context, NULL, version,
+                SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, 0xFF,
+                request.header.param1, 0, NULL, opaque, &opaque_size));
+    assert_true(libspdm_tpm_verify_quote(public_key, asym, bank, opaque, opaque_size,
+                                        request.nonce, sizeof(request.nonce)));
+    /* Unsigned and count-only callbacks carry no quote. */
+    opaque_size = sizeof(opaque);
+    assert_true(libspdm_measurement_opaque_data(NULL, NULL, version,
+                SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, measurement_index,
+                0, 0, NULL, opaque, &opaque_size));
+    assert_int_equal(opaque_size, 0);
+    opaque_size = sizeof(opaque);
+    assert_true(libspdm_measurement_opaque_data(context, NULL, version,
+                SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, 0,
+                request.header.param1, 0, NULL, opaque, &opaque_size));
+    assert_int_equal(opaque_size, 0);
+    request.header.param2 = measurement_index;
+    request.slot_id_param = 0xF;
+    opaque_size = sizeof(opaque);
+    assert_false(libspdm_measurement_opaque_data(context, NULL, version,
+                 SPDM_MEASUREMENT_SPECIFICATION_DMTF, bank, measurement_index,
+                 request.header.param1, 0, NULL, opaque, &opaque_size));
+    libspdm_asym_free(asym, public_key);
+    free(cert);
+    free(context);
+}
+#endif
+
 static int libspdm_spdm_tpm_test_main(void)
 {
     const struct CMUnitTest test_cases[] = {
@@ -662,6 +793,7 @@ static int libspdm_spdm_tpm_test_main(void)
         cmocka_unit_test(test_spdm_tpm_mel_uses_configured_measurements),
         cmocka_unit_test(test_spdm_tpm_cert_slot_validation),
         cmocka_unit_test(test_spdm_tpm_quote_validation),
+        cmocka_unit_test(test_spdm_tpm_quote_rejects_invalid_selection),
 
         /* Live TPM tests */
         cmocka_unit_test(test_tpm_live_read_pcr),
@@ -670,10 +802,14 @@ static int libspdm_spdm_tpm_test_main(void)
         cmocka_unit_test(test_spdm_tpm_live_fill_meas_block),
         cmocka_unit_test(test_spdm_tpm_live_sign_and_verify),
         cmocka_unit_test(test_spdm_tpm_live_quote),
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+        cmocka_unit_test(test_spdm_tpm_live_measurement_quote),
+#endif
     };
 
     return cmocka_run_group_tests(test_cases, NULL, NULL);
 }
+
 
 int main(void)
 {

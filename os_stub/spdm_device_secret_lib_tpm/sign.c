@@ -20,6 +20,7 @@
 #include "library/spdm_crypt_ext_lib.h"
 #include "internal/libspdm_common_lib.h"
 #include "keys.h"
+#include "meas_impl.h"
 
 #if (LIBSPDM_ENABLE_CAPABILITY_MUT_AUTH_CAP) || (LIBSPDM_ENABLE_CAPABILITY_ENDPOINT_INFO_CAP)
 static const char *get_requester_key_handle(uint8_t slot_id)
@@ -106,7 +107,7 @@ bool libspdm_requester_data_sign(
 }
 #endif /* (LIBSPDM_ENABLE_CAPABILITY_MUT_AUTH_CAP) || (...) */
 
-static const char *get_responder_key_handle(uint8_t slot_id)
+const char *libspdm_tpm_get_responder_key_handle(uint8_t slot_id)
 {
     switch (slot_id) {
 #ifdef LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_0
@@ -163,7 +164,7 @@ bool libspdm_responder_data_sign(
         return false;
     }
 
-    key_handle = get_responder_key_handle(key_pair_id);
+    key_handle = libspdm_tpm_get_responder_key_handle(key_pair_id);
     if (key_handle == NULL) {
         key_handle = LIBSPDM_TPM_HANDLE_RESPONDER_HANDLE_SLOT_0;
     }

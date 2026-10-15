@@ -5,6 +5,7 @@
  **/
 
 #include <openssl/err.h>
+#include <errno.h>
 #include <tss2/tss2_common.h>
 #include <tss2/tss2_esys.h>
 #include <tss2/tss2_tctildr.h>
@@ -147,6 +148,35 @@ bool libspdm_tpm_get_pub_key_handle(const void *handle, void **context)
     return true;
 }
 
+static bool map_spdm_meas_hash_to_tpm(uint32_t meas_hash_algo, TPMI_ALG_HASH *tpm_hash)
+{
+    switch (meas_hash_algo) {
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_256:
+        *tpm_hash = TPM2_ALG_SHA3_256;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256:
+        *tpm_hash = TPM2_ALG_SHA256;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_384:
+        *tpm_hash = TPM2_ALG_SHA3_384;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_384:
+        *tpm_hash = TPM2_ALG_SHA384;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_512:
+        *tpm_hash = TPM2_ALG_SHA3_512;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_512:
+        *tpm_hash = TPM2_ALG_SHA512;
+        return true;
+    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SM3_256:
+        *tpm_hash = TPM2_ALG_SM3_256;
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool libspdm_tpm_read_pcr(uint32_t hash_algo, uint32_t index, void *buffer, size_t *size)
 {
     TSS2_RC result = 1;
@@ -176,26 +206,11 @@ bool libspdm_tpm_read_pcr(uint32_t hash_algo, uint32_t index, void *buffer, size
         return false;
     }
 
-    switch (hash_algo)
-    {
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_256:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SM3_256:
-        sel.pcrSelections[0].hash = TPM2_ALG_SHA256;
-        digest_size = 32;
-        break;
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_384:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_384:
-        sel.pcrSelections[0].hash = TPM2_ALG_SHA384;
-        digest_size = 48;
-        break;
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_512:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_512:
-        sel.pcrSelections[0].hash = TPM2_ALG_SHA512;
-        digest_size = 64;
-        break;
-    default:
-        LIBSPDM_DEBUG((LIBSPDM_DEBUG_ERROR, "unsupported measurement hash algo %d\n", hash_algo));
+    if (!map_spdm_meas_hash_to_tpm(hash_algo, &sel.pcrSelections[0].hash)) {
+        return false;
+    }
+    digest_size = libspdm_get_measurement_hash_size(hash_algo);
+    if (digest_size == 0) {
         return false;
     }
 
@@ -391,57 +406,33 @@ out:
 
 static uint32_t parse_tpm_key_handle(const void *handle_param)
 {
-#define TPM_HANDLE_START_RANGE 0x80000000
-#define TPM_HANDLE_END_RANGE 0x81FFFFFF
-#define TPM_HANDLE_HANDLE_PREFIX "handle:"
-#define TPM_HANDLE_TPM2TSS_PREFIX "tpm2tss:"
+    const char *text;
+    char *end;
+    unsigned long handle;
 
-    const char *handle_str = NULL;
     if (handle_param == NULL) {
         return 0;
     }
-
-    if ((uintptr_t)handle_param >= TPM_HANDLE_START_RANGE && (uintptr_t)handle_param <= TPM_HANDLE_END_RANGE) {
+    if ((uintptr_t)handle_param >= 0x80000000u &&
+        (uintptr_t)handle_param <= 0x81FFFFFFu) {
         return (uint32_t)(uintptr_t)handle_param;
     }
-
-    handle_str = (const char *)handle_param;
-    if (strncmp(handle_str, TPM_HANDLE_HANDLE_PREFIX, sizeof(TPM_HANDLE_HANDLE_PREFIX) - 1) == 0) {
-        return (uint32_t)strtoul(handle_str + sizeof(TPM_HANDLE_HANDLE_PREFIX) - 1, NULL, 16);
+    text = handle_param;
+    if (strncmp(text, "handle:", 7) == 0) {
+        text += 7;
+    } else if (strncmp(text, "tpm2tss:", 8) == 0) {
+        text += 8;
     }
-    if (strncmp(handle_str, TPM_HANDLE_TPM2TSS_PREFIX, sizeof(TPM_HANDLE_TPM2TSS_PREFIX) - 1) == 0) {
-        return (uint32_t)strtoul(handle_str + sizeof(TPM_HANDLE_TPM2TSS_PREFIX) - 1, NULL, 16);
+    if (*text == '-' || *text == '+' || *text == ' ' || *text == '\t') {
+        return 0;
     }
-
-#undef TPM_HANDLE_START_RANGE
-#undef TPM_HANDLE_END_RANGE
-#undef TPM_HANDLE_HANDLE_PREFIX
-#undef TPM_HANDLE_TPM2TSS_PREFIX
-
-    return (uint32_t)strtoul(handle_str, NULL, 0);
-}
-
-static bool map_spdm_meas_hash_to_tpm(uint32_t meas_hash_algo, TPMI_ALG_HASH *tpm_hash)
-{
-    switch (meas_hash_algo) {
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_256:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_256:
-        *tpm_hash = TPM2_ALG_SHA256;
-        return true;
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_384:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_384:
-        *tpm_hash = TPM2_ALG_SHA384;
-        return true;
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_512:
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA3_512:
-        *tpm_hash = TPM2_ALG_SHA512;
-        return true;
-    case SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SM3_256:
-        *tpm_hash = TPM2_ALG_SM3_256;
-        return true;
-    default:
-        return false;
+    errno = 0;
+    handle = strtoul(text, &end, 0);
+    if (errno != 0 || end == text || *end != '\0' ||
+        handle < 0x80000000u || handle > 0x81FFFFFFu) {
+        return 0;
     }
+    return (uint32_t)handle;
 }
 
 bool libspdm_tpm_quote(
@@ -460,6 +451,7 @@ bool libspdm_tpm_quote(
     ESYS_TR key_tr = ESYS_TR_NONE;
     TPM2B_ATTEST *quoted = NULL;
     TPMT_SIGNATURE *signature = NULL;
+    TPM2B_PUBLIC *key_public = NULL;
     uint32_t key_handle;
     TPMI_ALG_HASH tpm_hash;
     TPML_PCR_SELECTION pcr_selection;
@@ -486,24 +478,26 @@ bool libspdm_tpm_quote(
     pcr_selection.count = 1;
     pcr_selection.pcrSelections[0].hash = tpm_hash;
     pcr_selection.pcrSelections[0].sizeofSelect = 3;
-    if (pcr_indices != NULL && pcr_count > 0) {
-        for (i = 0; i < pcr_count; i++) {
-            if (pcr_indices[i] < 24) {
-                pcr_selection.pcrSelections[0].pcrSelect[pcr_indices[i] / 8] |=
-                    (uint8_t)(1 << (pcr_indices[i] % 8));
-            }
+    if ((pcr_indices == NULL) || (pcr_count == 0) || (pcr_count > 24) ||
+        ((nonce == NULL) && (nonce_size != 0)) ||
+        (nonce_size > sizeof(qual_data.buffer))) {
+        return false;
+    }
+    for (i = 0; i < pcr_count; i++) {
+        if ((pcr_indices[i] >= 24) ||
+            ((pcr_selection.pcrSelections[0].pcrSelect[pcr_indices[i] / 8] &
+              (1u << (pcr_indices[i] % 8))) != 0)) {
+            return false;
         }
-    } else {
-        pcr_selection.pcrSelections[0].pcrSelect[0] = 0x03; /* Default: PCR 0 and 1 */
+        pcr_selection.pcrSelections[0].pcrSelect[pcr_indices[i] / 8] |=
+            (uint8_t)(1u << (pcr_indices[i] % 8));
     }
-
     memset(&qual_data, 0, sizeof(qual_data));
-    if (nonce != NULL && nonce_size > 0) {
-        qual_data.size = (UINT16)(nonce_size > sizeof(qual_data.buffer) ?
-                                  sizeof(qual_data.buffer) : nonce_size);
-        memcpy(qual_data.buffer, nonce, qual_data.size);
+    qual_data.size = (UINT16)nonce_size;
+    if (nonce_size != 0) {
+        memcpy(qual_data.buffer, nonce, nonce_size);
     }
-
+    memset(&in_scheme, 0, sizeof(in_scheme));
     in_scheme.scheme = TPM2_ALG_NULL;
 
     rc = Tss2_TctiLdr_Initialize(getenv("TPM2TOOLS_TCTI"), &tcti);
@@ -518,6 +512,26 @@ bool libspdm_tpm_quote(
 
     rc = Esys_TR_FromTPMPublic(esys, key_handle, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &key_tr);
     if (rc != TSS2_RC_SUCCESS) {
+        goto out;
+    }
+
+    rc = Esys_ReadPublic(esys, key_tr, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                         &key_public, NULL, NULL);
+    if (rc != TSS2_RC_SUCCESS) {
+        goto out;
+    }
+    if (key_public->publicArea.type == TPM2_ALG_ECC) {
+        if (key_public->publicArea.parameters.eccDetail.scheme.scheme == TPM2_ALG_NULL) {
+            in_scheme.scheme = TPM2_ALG_ECDSA;
+            in_scheme.details.ecdsa.hashAlg = key_public->publicArea.nameAlg;
+        }
+    } else if (key_public->publicArea.type == TPM2_ALG_RSA) {
+        if (key_public->publicArea.parameters.rsaDetail.scheme.scheme == TPM2_ALG_NULL) {
+            in_scheme.scheme = TPM2_ALG_RSASSA;
+            in_scheme.details.rsassa.hashAlg = key_public->publicArea.nameAlg;
+        }
+    } else {
+        rc = 1;
         goto out;
     }
 
@@ -566,6 +580,7 @@ bool libspdm_tpm_quote(
     rc = TSS2_RC_SUCCESS;
 
 out:
+    Esys_Free(key_public);
     if (quoted != NULL) {
         Esys_Free(quoted);
     }
@@ -590,15 +605,49 @@ static uint32_t map_tpm_hash_to_base_hash(TPMI_ALG_HASH tpm_hash)
     switch (tpm_hash) {
     case TPM2_ALG_SHA256:
         return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_256;
+    case TPM2_ALG_SHA3_256:
+        return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA3_256;
     case TPM2_ALG_SHA384:
         return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_384;
+    case TPM2_ALG_SHA3_384:
+        return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA3_384;
     case TPM2_ALG_SHA512:
         return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_512;
+    case TPM2_ALG_SHA3_512:
+        return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA3_512;
     case TPM2_ALG_SM3_256:
         return SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SM3_256;
     default:
         return 0;
     }
+}
+
+static bool libspdm_tpm_unwrap_quote(const uint8_t **buffer, size_t *size)
+{
+    const uint8_t *raw_buf = *buffer;
+    size_t raw_size = *size;
+    /* Accept our single-element format 1 table, with strict bounds/padding. */
+    if (raw_size >= 8 && raw_buf[0] == 1 && raw_buf[1] == 0 &&
+        raw_buf[2] == 0 && raw_buf[3] == 0) {
+        size_t payload_size = (size_t)raw_buf[6] | ((size_t)raw_buf[7] << 8);
+        size_t padded_size = (8 + payload_size + 3) & ~(size_t)3;
+        size_t padding_index;
+        if (raw_buf[4] != SPDM_REGISTRY_ID_TCG || raw_buf[5] != 0 ||
+            padded_size != raw_size || payload_size > raw_size - 8) {
+            return false;
+        }
+        for (padding_index = 8 + payload_size; padding_index < raw_size; padding_index++) {
+            if (raw_buf[padding_index] != 0) {
+                return false;
+            }
+        }
+        raw_buf += 8;
+        raw_size = payload_size;
+    }
+
+    *buffer = raw_buf;
+    *size = raw_size;
+    return true;
 }
 
 bool libspdm_tpm_verify_quote(
@@ -618,34 +667,19 @@ bool libspdm_tpm_verify_quote(
     size_t attest_offset = 0;
     uint8_t hash_digest[64];
     size_t hash_size = 0;
-    uint8_t raw_sig[64];
+    uint8_t raw_sig[132];
+    size_t component_size;
 
-    if (pub_key_context == NULL || quote_buffer == NULL || quote_buffer_size == 0) {
+    if (pub_key_context == NULL || quote_buffer == NULL || quote_buffer_size == 0 ||
+        (expected_nonce == NULL && expected_nonce_size != 0)) {
         return false;
     }
 
     const uint8_t *raw_buf = (const uint8_t *)quote_buffer;
     size_t raw_size = quote_buffer_size;
 
-    /* Check if quote_buffer is wrapped in SPDM Format 1 General Opaque Data Table */
-    if (quote_buffer_size >= sizeof(spdm_general_opaque_data_table_header_t) +
-        sizeof(opaque_element_table_header_t) + 4) {
-        const spdm_general_opaque_data_table_header_t *tbl =
-            (const spdm_general_opaque_data_table_header_t *)quote_buffer;
-        if (tbl->total_elements >= 1 &&
-            tbl->reserved[0] == 0 && tbl->reserved[1] == 0 && tbl->reserved[2] == 0) {
-            const opaque_element_table_header_t *elem =
-                (const opaque_element_table_header_t *)(tbl + 1);
-            if (elem->id == SPDM_REGISTRY_ID_TCG) {
-                const uint8_t *p = (const uint8_t *)(elem + 1) + elem->vendor_len;
-                uint16_t elem_data_len = (uint16_t)(p[0] | (p[1] << 8));
-                p += sizeof(uint16_t);
-                if ((size_t)(p - (const uint8_t *)quote_buffer) + elem_data_len <= quote_buffer_size) {
-                    raw_buf = p;
-                    raw_size = elem_data_len;
-                }
-            }
-        }
+    if (!libspdm_tpm_unwrap_quote(&raw_buf, &raw_size)) {
+        return false;
     }
 
     /* Unmarshal TPM2B_ATTEST */
@@ -660,12 +694,19 @@ bool libspdm_tpm_verify_quote(
         return false;
     }
 
+    if (offset != raw_size) {
+        return false;
+    }
+
     /* Parse inner TPMS_ATTEST to check magic, type, and nonce */
     rc = Tss2_MU_TPMS_ATTEST_Unmarshal(attest.attestationData, attest.size, &attest_offset, &tpms_attest);
     if (rc != TSS2_RC_SUCCESS) {
         return false;
     }
 
+    if (attest_offset != attest.size) {
+        return false;
+    }
     if (tpms_attest.magic != TPM2_GENERATED_VALUE) {
         return false;
     }
@@ -673,11 +714,10 @@ bool libspdm_tpm_verify_quote(
         return false;
     }
 
-    if (expected_nonce != NULL && expected_nonce_size > 0) {
-        if (tpms_attest.extraData.size != expected_nonce_size ||
-            memcmp(tpms_attest.extraData.buffer, expected_nonce, expected_nonce_size) != 0) {
-            return false;
-        }
+    if (tpms_attest.extraData.size != expected_nonce_size ||
+        (expected_nonce_size != 0 &&
+         memcmp(tpms_attest.extraData.buffer, expected_nonce, expected_nonce_size) != 0)) {
+        return false;
     }
 
     TPMI_ALG_HASH tpm_sig_hash = TPM2_ALG_NULL;
@@ -691,13 +731,13 @@ bool libspdm_tpm_verify_quote(
         return false;
     }
 
-    /* If caller specified hash_algo, verify that it matches signature hash */
+    /* hash_algo identifies the PCR bank, independently of the key's scheme. */
     if (hash_algo != 0) {
         TPMI_ALG_HASH expected_tpm_hash;
-        if (map_spdm_meas_hash_to_tpm(hash_algo, &expected_tpm_hash)) {
-            if (tpm_sig_hash != expected_tpm_hash) {
-                return false;
-            }
+        if (!map_spdm_meas_hash_to_tpm(hash_algo, &expected_tpm_hash) ||
+            tpms_attest.attested.quote.pcrSelect.count != 1 ||
+            tpms_attest.attested.quote.pcrSelect.pcrSelections[0].hash != expected_tpm_hash) {
+            return false;
         }
     }
 
@@ -719,33 +759,29 @@ bool libspdm_tpm_verify_quote(
      * Use spdm_version=0 so libspdm_asym_verify_hash verifies raw message_hash
      * directly without prepending the SPDM 1.2 signing context prefix. */
     if (sig.sigAlg == TPM2_ALG_ECDSA) {
+        component_size = libspdm_get_asym_signature_size(base_asym_algo) / 2;
+        if ((base_asym_algo != SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P256 &&
+             base_asym_algo != SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P384 &&
+             base_asym_algo != SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P521) ||
+            component_size == 0 || component_size > sizeof(raw_sig) / 2 ||
+            sig.signature.ecdsa.signatureR.size == 0 ||
+            sig.signature.ecdsa.signatureS.size == 0 ||
+            sig.signature.ecdsa.signatureR.size > component_size ||
+            sig.signature.ecdsa.signatureS.size > component_size) {
+            return false;
+        }
         memset(raw_sig, 0, sizeof(raw_sig));
-        if (sig.signature.ecdsa.signatureR.size <= 32) {
-            memcpy(raw_sig + 32 - sig.signature.ecdsa.signatureR.size,
-                   sig.signature.ecdsa.signatureR.buffer,
-                   sig.signature.ecdsa.signatureR.size);
-        } else if (sig.signature.ecdsa.signatureR.size == 33 && sig.signature.ecdsa.signatureR.buffer[0] == 0) {
-            memcpy(raw_sig, sig.signature.ecdsa.signatureR.buffer + 1, 32);
-        } else {
-            return false;
-        }
-
-        if (sig.signature.ecdsa.signatureS.size <= 32) {
-            memcpy(raw_sig + 64 - sig.signature.ecdsa.signatureS.size,
-                   sig.signature.ecdsa.signatureS.buffer,
-                   sig.signature.ecdsa.signatureS.size);
-        } else if (sig.signature.ecdsa.signatureS.size == 33 && sig.signature.ecdsa.signatureS.buffer[0] == 0) {
-            memcpy(raw_sig + 32, sig.signature.ecdsa.signatureS.buffer + 1, 32);
-        } else {
-            return false;
-        }
+        memcpy(raw_sig + component_size - sig.signature.ecdsa.signatureR.size,
+               sig.signature.ecdsa.signatureR.buffer, sig.signature.ecdsa.signatureR.size);
+        memcpy(raw_sig + 2 * component_size - sig.signature.ecdsa.signatureS.size,
+               sig.signature.ecdsa.signatureS.buffer, sig.signature.ecdsa.signatureS.size);
 
         return libspdm_asym_verify_hash(
             0, 0,
             base_asym_algo, base_hash,
             (void *)pub_key_context,
             hash_digest, hash_size,
-            raw_sig, sizeof(raw_sig));
+            raw_sig, 2 * component_size);
     } else if (sig.sigAlg == TPM2_ALG_RSASSA || sig.sigAlg == TPM2_ALG_RSAPSS) {
         return libspdm_asym_verify_hash(
             0, 0,

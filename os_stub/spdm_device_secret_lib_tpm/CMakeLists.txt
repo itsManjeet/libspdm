@@ -130,6 +130,7 @@ set(LIBSPDM_TPM_REQUESTER_HANDLES "0x81000011;0x81000011" CACHE STRING "Semicolo
 set(LIBSPDM_TPM_REQUESTER_CERTCHAINS "0x1500011;0x1500011" CACHE STRING "Semicolon-separated list of TPM Requester Certificate Chain NV Indices")
 set(LIBSPDM_TPM_RESPONDER_HANDLES "0x81000021;0x81000021;0x81000021" CACHE STRING "Semicolon-separated list of TPM Responder Handle Strings")
 set(LIBSPDM_TPM_RESPONDER_CERTCHAINS "0x1500021;0x1500021;0x1500021" CACHE STRING "Semicolon-separated list of TPM Responder Certificate Chain NV Indices")
+option(LIBSPDM_TPM_MEASUREMENT_QUOTE "Include a nonce-bound TPM quote in signed measurement opaque data (SPDM 1.2+, format 1)" OFF)
 set(LIBSPDM_TPM_MEASUREMENTS "0x1=pcr;0x2=pcr;0x3=pcr;0x4=pcr;0x10=svn;0x11=hem;0xFD=manifest;0xFE=device_mode" CACHE STRING "Semicolon- or comma-separated TPM measurement entries in index=kind form. Supported kinds: pcr, svn, hem, manifest, device_mode")
 set(LIBSPDM_TPM_MANIFEST_VENDOR_ID "0" CACHE STRING "Vendor ID encoded in the generated TPM measurement manifest")
 set(LIBSPDM_TPM_SVN "0x7" CACHE STRING "Default TPM SVN value used when LIBSPDM_TPM_SVN_NV_INDEX is not configured")
@@ -268,6 +269,7 @@ set(MEASUREMENT_FILL_ALL_BODY "")
 set(MEASUREMENT_MEL_BODY "")
 set(MEASUREMENT_MANIFEST_ENTRIES "")
 set(MEASUREMENT_COUNT 0)
+set(MEASUREMENT_PCR_CASES "")
 
 foreach(MEASUREMENT_CONFIG ${LIBSPDM_TPM_MEASUREMENTS_LIST})
     string(STRIP "${MEASUREMENT_CONFIG}" MEASUREMENT_CONFIG)
@@ -305,6 +307,12 @@ foreach(MEASUREMENT_CONFIG ${LIBSPDM_TPM_MEASUREMENTS_LIST})
 
     if(";${MEASUREMENT_VALUES_SEEN};" MATCHES ";${MEASUREMENT_INDEX_VALUE};")
         message(FATAL_ERROR "LIBSPDM_TPM_MEASUREMENTS contains duplicate index ${MEASUREMENT_INDEX}")
+    endif()
+    if(MEASUREMENT_KIND STREQUAL "PCR")
+        if(MEASUREMENT_INDEX_VALUE GREATER 24)
+            message(FATAL_ERROR "PCR measurement indices must be 1..24 (PCR 0..23)")
+        endif()
+        set(MEASUREMENT_PCR_CASES "${MEASUREMENT_PCR_CASES}    case ${MEASUREMENT_INDEX_VALUE}:\n        return true;\n")
     endif()
     set(MEASUREMENT_VALUES_SEEN "${MEASUREMENT_VALUES_SEEN};${MEASUREMENT_INDEX_VALUE}")
 
@@ -362,6 +370,8 @@ configure_file(
 )
 
 add_library(spdm_device_secret_lib_tpm STATIC "")
+target_compile_definitions(spdm_device_secret_lib_tpm PUBLIC
+    LIBSPDM_TPM_MEASUREMENT_QUOTE=$<BOOL:${LIBSPDM_TPM_MEASUREMENT_QUOTE}>)
 
 target_include_directories(spdm_device_secret_lib_tpm
     PRIVATE

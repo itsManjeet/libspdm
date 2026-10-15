@@ -226,11 +226,35 @@ libspdm_return_t libspdm_measurement_collection(
     size_t total_size_needed;
     bool use_bit_stream;
     size_t measurement_block_size;
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+    bool quote_required;
+    size_t pcr_index;
+#endif
 
     if ((measurement_specification != SPDM_MEASUREMENT_SPECIFICATION_DMTF) ||
         (measurement_hash_algo == 0)) {
         return LIBSPDM_STATUS_UNSUPPORTED_CAP;
     }
+
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+    quote_required = false;
+    for (pcr_index = 1; pcr_index <= 24; pcr_index++) {
+        if (((measurements_index == 0xFF) || (measurements_index == pcr_index)) &&
+            libspdm_tpm_is_pcr_measurement((uint8_t)pcr_index)) {
+            quote_required = true;
+        }
+    }
+    if (((request_attribute & SPDM_GET_MEASUREMENTS_REQUEST_ATTRIBUTES_GENERATE_SIGNATURE) != 0) &&
+        quote_required) {
+        libspdm_context_t *context = spdm_context;
+        if ((context == NULL) ||
+            ((spdm_version >> SPDM_VERSION_NUMBER_SHIFT_BIT) < SPDM_MESSAGE_VERSION_12) ||
+            ((context->connection_info.algorithm.other_params_support &
+              SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_MASK) != SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1)) {
+            return LIBSPDM_STATUS_UNSUPPORTED_CAP;
+        }
+    }
+#endif
 
     if (g_check_measurement_request_context) {
         if ((spdm_version >> SPDM_VERSION_NUMBER_SHIFT_BIT) >= SPDM_MESSAGE_VERSION_13) {
@@ -321,7 +345,89 @@ successful_return:
     return LIBSPDM_STATUS_SUCCESS;
 }
 
-size_t libspdm_secret_lib_meas_opaque_data_size;
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+/* The opaque callback has no nonce/slot arguments. Read the validated request
+ * from this connection instead of caching a nonce in shared global state. */
+static bool libspdm_tpm_measurement_quote(
+    void *spdm_context, spdm_version_number_t spdm_version,
+    uint32_t measurement_hash_algo, uint8_t measurement_index,
+    uint8_t request_attribute, void *opaque_data, size_t *opaque_data_size)
+{
+    libspdm_context_t *context;
+    const spdm_get_measurements_request_t *request;
+    const char *key_handle;
+    uint8_t pcr_indices[24];
+    size_t pcr_count;
+    size_t index;
+    size_t quote_size;
+    size_t total_size;
+    uint8_t quote[2048];
+    uint8_t *output;
+    uint8_t slot_id;
+
+    if (opaque_data_size == NULL) {
+        return false;
+    }
+    if ((request_attribute &
+         SPDM_GET_MEASUREMENTS_REQUEST_ATTRIBUTES_GENERATE_SIGNATURE) == 0) {
+        *opaque_data_size = 0;
+        return true;
+    }
+    pcr_count = 0;
+    for (index = 1; index <= 24; index++) {
+        if (((measurement_index == 0xFF) || (measurement_index == index)) &&
+            libspdm_tpm_is_pcr_measurement((uint8_t)index)) {
+            pcr_indices[pcr_count++] = (uint8_t)(index - 1);
+        }
+    }
+    if (pcr_count == 0) {
+        *opaque_data_size = 0;
+        return true;
+    }
+    context = spdm_context;
+    if ((context == NULL) ||
+        ((spdm_version >> SPDM_VERSION_NUMBER_SHIFT_BIT) < SPDM_MESSAGE_VERSION_12) ||
+        ((context->connection_info.algorithm.other_params_support &
+          SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_MASK) != SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1) ||
+        (context->last_spdm_request == NULL) ||
+        (context->last_spdm_request_size < sizeof(*request))) {
+        return false;
+    }
+    request = context->last_spdm_request;
+    if ((request->header.request_response_code != SPDM_GET_MEASUREMENTS) ||
+        (request->header.param1 != request_attribute) ||
+        (request->header.param2 != measurement_index)) {
+        return false;
+    }
+    slot_id = request->slot_id_param & SPDM_GET_MEASUREMENTS_REQUEST_SLOT_ID_MASK;
+    key_handle = libspdm_tpm_get_responder_key_handle(slot_id);
+    if (key_handle == NULL) {
+        return false;
+    }
+    quote_size = sizeof(quote);
+    if (!libspdm_tpm_quote(key_handle, measurement_hash_algo, pcr_indices, pcr_count,
+                           request->nonce, SPDM_NONCE_SIZE, quote, &quote_size)) {
+        return false;
+    }
+    /* Format 1 table, one TCG element, no vendor ID, little-endian length,
+     * marshaled TPM2B_ATTEST + TPMT_SIGNATURE, and zero alignment padding.
+     * This payload is a libspdm sample convention, not a TCG wire standard. */
+    total_size = (8 + quote_size + 3) & ~(size_t)3;
+    if ((opaque_data == NULL) || (*opaque_data_size < total_size)) {
+        *opaque_data_size = total_size;
+        return false;
+    }
+    output = opaque_data;
+    libspdm_zero_mem(output, total_size);
+    output[0] = 1;
+    output[4] = SPDM_REGISTRY_ID_TCG;
+    output[6] = (uint8_t)quote_size;
+    output[7] = (uint8_t)(quote_size >> 8);
+    libspdm_copy_mem(output + 8, total_size - 8, quote, quote_size);
+    *opaque_data_size = total_size;
+    return true;
+}
+#endif
 
 bool libspdm_measurement_opaque_data(
     void *spdm_context,
@@ -336,10 +442,6 @@ bool libspdm_measurement_opaque_data(
     void *opaque_data,
     size_t *opaque_data_size)
 {
-    size_t index;
-
-    LIBSPDM_ASSERT(libspdm_secret_lib_meas_opaque_data_size <= *opaque_data_size);
-
     if (g_check_measurement_request_context) {
         if ((spdm_version >> SPDM_VERSION_NUMBER_SHIFT_BIT) >= SPDM_MESSAGE_VERSION_13) {
             LIBSPDM_ASSERT(request_context_size == SPDM_REQ_CONTEXT_SIZE);
@@ -350,12 +452,14 @@ bool libspdm_measurement_opaque_data(
         }
     }
 
-    *opaque_data_size = libspdm_secret_lib_meas_opaque_data_size;
-
-    for (index = 0; index < *opaque_data_size; index++)
-    {
-        ((uint8_t *)opaque_data)[index] = (uint8_t)index;
-    }
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+    return libspdm_tpm_measurement_quote(
+        spdm_context, spdm_version, measurement_hash_algo, measurement_index,
+        request_attribute, opaque_data, opaque_data_size);
+#else
+    *opaque_data_size = 0;
+    return true;
+#endif
 
     return true;
 }

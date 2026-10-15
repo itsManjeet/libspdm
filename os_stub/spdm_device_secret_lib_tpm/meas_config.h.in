@@ -8,6 +8,16 @@
 
 /* Auto-generated TPM measurement configuration */
 
+#if LIBSPDM_TPM_MEASUREMENT_QUOTE
+static bool libspdm_tpm_is_pcr_measurement(uint8_t index)
+{
+    switch (index) {
+@MEASUREMENT_PCR_CASES@    default:
+        return false;
+    }
+}
+#endif
+
 #define LIBSPDM_TPM_MEASUREMENT_BLOCK_NUMBER @MEASUREMENT_COUNT@
 
 static bool libspdm_tpm_is_measurement_index_configured(uint8_t measurements_index)

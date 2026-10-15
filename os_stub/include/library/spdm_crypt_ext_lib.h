@@ -240,12 +240,12 @@ bool libspdm_tpm_read_nv(uint32_t index, void **buffer, size_t *size);
  * containing the marshaled TPM2B_ATTEST structure followed by the marshaled
  * TPMT_SIGNATURE structure.
  *
- * @param[in]      key_handle_str     TPM key handle string (e.g. "handle:0x81000021" or NULL for default).
+ * @param[in]      key_handle_str     TPM key handle string (e.g. "handle:0x81000021"; required).
  * @param[in]      hash_algo          SPDM measurement hash algo used for the PCR bank.
  * @param[in]      pcr_indices        Array of PCR indices to include in quote (0..23).
- * @param[in]      pcr_count          Number of PCR indices in pcr_indices (or 0 for all active PCRs).
- * @param[in]      nonce              Qualifying data / nonce buffer.
- * @param[in]      nonce_size         Size in bytes of nonce buffer.
+ * @param[in]      pcr_count          Number of distinct PCR indices in pcr_indices (1..24; required).
+ * @param[in]      nonce              Qualifying data / nonce buffer (NULL only for zero size).
+ * @param[in]      nonce_size         Size in bytes of nonce buffer; oversized nonces are rejected.
  * @param[out]     quote_buffer       Destination buffer to receive marshaled quote (attest + signature).
  * @param[in,out]  quote_buffer_size  On input, capacity of quote_buffer; on output, size used or required.
  *
@@ -271,13 +271,14 @@ bool libspdm_tpm_quote(
  *
  * @param[in]  pub_key_context      Asymmetric public key context for the quote signing key.
  * @param[in]  base_asym_algo       SPDM base_asym_algo of the signing key (e.g. ECDSA P256).
- * @param[in]  hash_algo            SPDM base_hash_algo used for signature verification.
+ * @param[in]  hash_algo            SPDM measurement hash algorithm for the PCR bank (0 skips bank check).
  * @param[in]  quote_buffer         Buffer containing marshaled quote (attest + signature).
  * @param[in]  quote_buffer_size    Size in bytes of quote_buffer.
  * @param[in]  expected_nonce       Expected qualifying data / nonce.
  * @param[in]  expected_nonce_size  Size of expected_nonce.
  *
- * @retval true   Quote is authentic and valid.
+ * @retval true   Signature, header, bank (if requested), and nonce are valid.
+ *                This does not validate PCR values; also call libspdm_tpm_verify_quote_pcrs.
  * @retval false  Verification failed.
  */
 bool libspdm_tpm_verify_quote(
@@ -288,6 +289,20 @@ bool libspdm_tpm_verify_quote(
     size_t quote_buffer_size,
     const uint8_t *expected_nonce,
     size_t expected_nonce_size);
+
+/**
+ * Check the quote's exact PCR bank/selection and PCR composite digest.
+ * This does not verify the signature or nonce: also call libspdm_tpm_verify_quote.
+ * Accepts the same raw or sample format 1 opaque data as that function.
+ *
+ * pcr_mask selects PCRs 0..23. pcr_values contains their concatenated digests
+ * in ascending PCR order, using measurement_hash_algo as the bank algorithm.
+ * A mismatch (including a PCR extension between collection and quote) fails.
+ */
+bool libspdm_tpm_verify_quote_pcrs(
+    const void *quote_buffer, size_t quote_buffer_size,
+    uint32_t measurement_hash_algo, uint32_t pcr_mask,
+    const void *pcr_values, size_t pcr_values_size);
 
 #endif /* LIBSPDM_TPM_SUPPORT */
 

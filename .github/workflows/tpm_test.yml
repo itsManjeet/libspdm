@@ -19,6 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        quote: ["OFF", "ON"]
         target:
           - Debug
           - Release
@@ -46,7 +47,8 @@ jobs:
             -DTARGET=${{ matrix.target }} \
             -DCRYPTO=openssl \
             -DDEVICE=tpm \
-            -DLIBSPDM_TPM_SUPPORT=ON
+            -DLIBSPDM_TPM_SUPPORT=ON \
+            -DLIBSPDM_TPM_MEASUREMENT_QUOTE=${{ matrix.quote }}
 
       - name: Build
         run: |
